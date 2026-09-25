@@ -1,7 +1,7 @@
 # 标准任务流程（六步链）
 
 > 场景：个人标准工作流 | 用途：从想法到交付的完整链路 | 版本：v1（2026-08-22 定案）
-> 来源：cjh 与 Hanako 梳理确认（batch-grill-me → 三省（可选）→ plan → karpathy-guidelines → neat-freak）
+> 来源：项目内部梳理确认（batch-grill-me → 三省（可选）→ plan → karpathy-guidelines → neat-freak）
 
 ## 一句话
 

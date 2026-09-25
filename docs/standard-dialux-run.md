@@ -1,9 +1,9 @@
 # DIALux 运行标准流程 — Agent 可执行版
 
 > 版本：v1（2026-09-07）| 用途：供 computer use agent 自动化执行 DIALux evo 建模与布灯
-> 参考：Lightman 团队 `DIALux_evo_操作SOP_Agent可执行版.md`（人/agent 手动操作版）+
+> 参考：既有手动操作 SOP `DIALux_evo_操作SOP_Agent可执行版.md`（人/agent 手动版）+
 > 本项目已验证的真实链路（解析器 + STF 批量导入 + UIA 驱动）
-> 区别：Lightman SOP 是「在 DIALux 里手动描点」，本流程是「解析器自动建模 + UIA 自动驱动」
+> 区别：手动 SOP 是「在 DIALux 里手动描点」，本流程是「解析器自动建模 + UIA 自动驱动」
 
 ## 一句话
 
@@ -181,17 +181,17 @@ UIA 通道（2026-09-07 真机探针，见 `build/probe_20260907_channels.txt`�
   （网格密度，选中元件后启用）
 - **无坐标输入框**：桌面精确评估区 = 画布点击（唯一剩余脆点）或直写 .evo（待验证）
 
-**[已有结果的含义]** 3135lx 结果是 DIALux 默认评估面（房间级）产出——「算出照度」
+**[已有结果的含义]** 实测读数是 DIALux 默认评估面（房间级）产出——「算出照度」
 不依赖手动评估区；桌面精确照度才需要自建计算元件。
 
 ### Step 10: 读结果（✅ 2026-09-08 真机验证 — UIA 直读，无需解析二进制）
 
 **[执行]** ResultsMonitor 工具（计算后激活）：
-- `ResultsMonitorSurfaceResultAverage` = 平均照度（实测读出 **3135 lx**）
-- `ResultsMonitorSurfaceUniformityAverage` = 均匀度（实测 **0.31**）
+- `ResultsMonitorSurfaceResultAverage` = 平均照度（实测读出）
+- `ResultsMonitorSurfaceUniformityAverage` = 均匀度（实测）
 - `ResultsMonitorList` = 逐面结果列表
 
-**[对照验收]** 会议室 ≥750lx ✓（3135 超标因自动排布偏密）；均匀度 0.31 < 0.70 ✗
+**[对照验收]** 目标 ≥750lx ✓（照度超标因自动排布偏密）；均匀度不达标 ✗
 （自动网格排布的固有均匀性问题，不是读数问题——精调布灯后复算）
 
 **[⚠️ 备选]** 结果也在 `Project/Results/Group_*/Dataillumqt0.rsl`（boost 序列化二进制，
@@ -212,9 +212,9 @@ demo_run.exe --dwg 布局图.dwg --dwg-lighting 灯具图.dwg \
 # 悬浮窗（overlay.py）实时显示每步：解析→STF→导入→布灯→家具→评估→计算→保存
 ```
 
-## 与 Lightman SOP 的映射
+## 与手动 SOP 的映射
 
-| Lightman SOP（手动） | 本流程（自动） |
+| 手动 SOP | 本流程（自动） |
 |---|---|
 | Step 2 导入 DWG 做底图 | 解析器直接抽 IR，不导入 DIALux |
 | Step 3.1-3.3 多边形工具描房间 | STF 批量导入（坐标来自 DWG 精确提取） |

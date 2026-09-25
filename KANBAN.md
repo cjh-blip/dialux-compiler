@@ -42,8 +42,8 @@ Python 3.11.15，本机无 venv。这里是全仓唯一权威数字。
 
 ## 现役几何口径
 
-`build/room_layout.json` 主房间 `WALLRING_000_E18_2DF7`：**17 个点（首尾闭合重复），16 个唯一顶点**，
-鞋带法 signed_area = **+97.665 m²（CCW）**。全仓统一用这一种表述，其余位置只放指针。
+`build/room_layout.json` 主房间（样例图纸）：**顶点数按首尾闭合去重**，
+鞋带法 signed_area 为**正值即 CCW**。全仓统一用这一种表述，其余位置只放指针。
 
 - 同批产物：`build/mvp2_fixed.stf` NrPoints=17。修复前快照 `build/room_layout_before_fix.json`
   主房间 `LINEARC_020_E53_355C` = 54 个点（53 个唯一顶点）/ signed_area **-93.628 m²（CW）**，
@@ -174,7 +174,7 @@ Schraenke(17) / Polstermoebel(11) / Stuehle(11) / Werkbaenke(7) / Betten(5)。
   不含光度数据：官网 URL、插件下载 URL（`plugindownload.dial.de/<slug>.zip`）、
   接入模式（**online 416 / offline 37**）、许可等级（Basic 260 / Standard 126 / Premium 67）。
 - **装机自带 0 个光度文件**（安装目录 `*.ldt/*.ies/*.uld/*.gldf` 各 0 个），灯具目录纯在线要登录。
-  **但本机另有 Zemax 样本可用**：`C:\Users\cjh\Documents\Zemax\Objects\Sources\EULUMDAT\Sample.LDT`
+  **但本机另有 Zemax 样本可用**：`<Zemax 安装>\Objects\Sources\EULUMDAT\Sample.LDT`
   （351 KB）+ `IESNA\` 下 4 个 `.ies`（OSRAM / Projector / sample）——**可作离线导入测试素材**。
 - **2026-09-06 实测 `File → Import → ImportLuminaire` 存在且 `en=True`**，文件对话框的类型过滤器
   （Win32 控件 1136，`CB_GETLBTEXT` 读出 8 条）明确收 **`*.uld;*.gldf;*.ldt;*.ies;*.cib;*.ltl`**。
@@ -221,8 +221,8 @@ Schraenke(17) / Polstermoebel(11) / Stuehle(11) / Werkbaenke(7) / Betten(5)。
 转「几何验收通过」。剩下的只是墙体朝向 / profile 归类两条**人眼观察项**，已转 MVP3 观察项，
 不再阻塞 MVP2。范围提醒：STF 只出房间几何，灯具不进文件（见「现役实现边界」第 2 条）。
 
-- [x] **P0 修复单**：test_smoke 子进程编码修复（subprocess.run 加 encoding="utf-8"）｜Hanako｜2026-09-02，pytest 32 全绿
-- [x] 技术栈文档同步（README/agent-spec 天硕版：Hermes 追踪 + claude 子员工，TR-7.3/7.4 断言同步）｜Hanako｜2026-09-02
+- [x] **P0 修复单**：test_smoke 子进程编码修复（subprocess.run 加 encoding="utf-8"）｜AI 会话｜2026-09-02，pytest 32 全绿
+- [x] 技术栈文档同步（README/agent-spec 天硕版：Hermes 追踪 + claude 子员工，TR-7.3/7.4 断言同步）｜AI 会话｜2026-09-02
 - [x] **MVP2：IR → STF 生成器（src/exporter/stf.py）**｜backend-developer｜2026-09-02｜t_7c5dc714
   - 审查：两轮 code-reviewer（CRITICAL/HIGH 全修），测试 22→70 条
   - 遗留：房间轮廓疑似混入家具边（柜子识别成墙壁）→ 已在 t_0deee369 修复（见下）
@@ -240,9 +240,8 @@ Schraenke(17) / Polstermoebel(11) / Stuehle(11) / Werkbaenke(7) / Betten(5)。
     3. 房间环平滑兜底：`smooth_room_ring` 填平 <0.5 m²（= validator 规则 2 下限）
        且**填平后面积变大**的凹槽 + 合并共线断点（`ParseConfig.smooth_room_rings`，默认开）
   - 真实图实测（布局图.dwg 重跑）：主房间候选从 LINE+ARC 链环 `LINEARC_020_E53_355C`
-    （53 个唯一顶点 / 93.63 m² / 7 条锯齿）换成墙线环（0 条锯齿，几何见「现役几何口径」）；
-    北墙 y=8.05 从 2.55 直通 9.74 单边、东墙 x=11.9 从 0 直通 8.78、西墙 0.34/0.075 台阶消失；
-    南墙 0.77 m² 真实凸台保留
+    （含锯齿的旧环）换成墙线环（0 条锯齿，几何见「现役几何口径」）；
+    北墙单边直通、东墙直通、西墙台阶消失；南墙真实凸台保留
   - 无回归：22 家具仍全部识别、28 灯具全部落在房间内、validator 违规数不变（9 WARNING，
     全是家具小面积，0 HALT）；pytest 全绿（该任务新增 45 条测试，门禁数字见「门禁实测」）
   - 产物：`build/room_layout.json`、`build/room_layout.svg`、`build/mvp2_fixed.stf`
@@ -263,10 +262,9 @@ Schraenke(17) / Polstermoebel(11) / Stuehle(11) / Werkbaenke(7) / Betten(5)。
        `ArchiveInfo.xml` Version 5.14.0.5 / Title `mvp2_fixed`）
     4. `.evo` 内嵌 `Project/STF/k0lkngwj.tmp` 与源 `mvp2_fixed.stf` **逐字节相同**
        （均 591 bytes，sha256 前 16 位 `5d8001dfaea2f7bb`）
-    5. **11/11 顶点坐标全部以「米 + float64」出现在 `Project/ScenegraphScene`**，
-       且出现次数与 STF 里的复用次数成正比：`8.78`→84 次（=2×42，Point2/Point6）、
-       `0.75`→126 次（=3×42）、`0.77/2.55/7.5/8.05/8.26/8.3/9.74/11.9` 各 42 次、
-       层高 `2.8`→181 次。**无毫米单位命中** → evo 内部按米存，STF 的米口径无需换算
+    5. **全部顶点坐标以「米 + float64」出现在 `Project/ScenegraphScene`**，
+       且出现次数与 STF 里的复用次数成正比（复用 2 次的值出现 84 次、3 次的出现 126 次、
+       其余各 42 次）。**无毫米单位命中** → evo 内部按米存，STF 的米口径无需换算
   - **多余墙段消失**：本次导入的是 16 唯一顶点版（旧坏几何 53 唯一顶点），
     `.evo` 里内嵌 STF 字节相同且顶点坐标全中 → 柜子边没有任何进入房间轮廓的通道
   - **仍待人眼复核（不阻塞 MVP2 收尾，转 MVP3 观察项）**：
@@ -288,7 +286,7 @@ Schraenke(17) / Polstermoebel(11) / Stuehle(11) / Werkbaenke(7) / Betten(5)。
       **落地验收（拆 `.evo` ZIP，非人眼）**：`build/demo_room.evo` 69363 B，
       `Project/STF/53ch443s.tmp` 与 `build/demo_room.stf` **逐字节相同**；
       房间顶点 + 层高共 **11/11 个已知坐标**在 `Project/ScenegraphScene` 里
-      命中 float64 米（0.75→126 次、2.55→42、9.74→42、11.9→42、8.78→84、2.8→133），
+      命中 float64 米（命中次数与复用次数一致），
       对照组证明扫描法有效。
 
       **界面验收（无视觉模型，直接数像素）**：`build/overlay_mid.png` /
@@ -370,8 +368,7 @@ Schraenke(17) / Polstermoebel(11) / Stuehle(11) / Werkbaenke(7) / Betten(5)。
          属 GUID 哈希序导致的重排，**不是新增几何**。
       3. 灯具 8 个唯一坐标（x: 0.945 / 4.281 / 7.617 / 10.954，y: 0.959 / 3.003 / 5.047 / 7.091）
          在 `ScenegraphScene` 里 **0/8 命中** float64 米，**0/8 命中**毫米。
-         同一文件的对照组房间顶点 **4/4 命中**（11.9→42 次、8.78→84 次、0.75→126 次、
-         2.8→133 次）→ 扫描方法有效，负结果可信。
+         同一文件的对照组房间顶点 **4/4 命中**（命中次数与复用次数一致）→ 扫描方法有效，负结果可信。
       4. `Project/InteractionManager/StfManager.dat` 只记 `StfManager (0, 0, #2)` +
          文件引用（`StfVersionSimple=0` / `StfVersionCoords=0`），无任何灯具对象。
 
@@ -458,8 +455,8 @@ Schraenke(17) / Polstermoebel(11) / Stuehle(11) / Werkbaenke(7) / Betten(5)。
       6. 2026-09-06 真机实证（破坏性，工程已 dirty 后存盘 `build/mvp3_lums.evo` 177990 B）：
          `aid_ArrangementFromSpace` 激活 + Save 后拆包，`.evo` 内 `ProjectData.dat`（非
          ScenegraphScene）出现 **`LuminaireElement`×114 / `FieldArrangementElementPositionData`×114**
-         （两次激活各生成一套 57 盏规则网格，9×7=63 扣房间外 6）→ **灯具实体确实落盘**。
-         房间轮廓自动进入排布多边形（`PART_Input` 内 11.9/8.78/0.75/2.55/9.74/8.26… 与现役
+         （两次激活各生成一套规则网格）→ **灯具实体确实落盘**。
+         房间轮廓自动进入排布多边形（`PART_Input` 内坐标与现役
          几何口径吻合），`ElementCountX/Y`=9/7、估算照度 510 lx @目标 500。
          遗留：① 这是**规则网格自动排布（房间外不封闭点被扣）**，不是 IR 图纸逐盏坐标；
          ② 验收扫描对象要从 `ScenegraphScene` 换成 `ProjectData.dat`（灯具数据在后者，
@@ -490,7 +487,7 @@ Schraenke(17) / Polstermoebel(11) / Stuehle(11) / Werkbaenke(7) / Betten(5)。
           命中就点「是」（保留工作），其它模态框不碰。已接入 run_import 预检。门禁
           221 passed + ruff 0。
       11. **DIALux 生态资料调研 2026-09-06**：`docs/reference-dialux-ecosystem.md`
-      12. **合规线性灯配光已下载 2026-09-07（Hanako 执行）**：24 个会员厂商线性灯/面板灯 IES
+      12. **合规线性灯配光已下载 2026-09-07（自动化执行）**：24 个会员厂商线性灯/面板灯 IES
           → `build/ies/linear/`（含 `_下载报告.md` + 3 个留档脚本 + 2 个 JSON，调试残留已清）。
           OPPLE 16 个全合规（Re295 面板灯 245×1145mm 最贴近需求）+ NVC 8 个（NLI 线性灯 4 个
           合规、NPN 面板灯 4 个 MANUFAC 空/ETI 已如实标注、待补齐 NVC 再导入）。
@@ -547,7 +544,7 @@ Schraenke(17) / Polstermoebel(11) / Stuehle(11) / Werkbaenke(7) / Betten(5)。
           `docs/standard-dialux-run.md`（DIALux 运行 SOP agent 可执行版，v2 已扩：解析→STF→导入→布灯→
           家具→桌面评估区→计算→读结果，含已验证链路与坑）、
           `docs/reference-standard-task-flow-v1.md`（通用六步链 v1 参考）。
-          软件开发增量按七步链走；DIALux 运行对照 Lightman SOP（手动）与本流程（自动）差异表。
+          软件开发增量按七步链走；DIALux 运行对照既有手动 SOP 与本流程（自动）差异表。
           家具建模/评估区/计算三通道真机探针见 `build/probe_20260907_channels.txt`
           （Cuboid 可写 + DrawExtrusionFurniture 拉伸 + CalculationButtonStart en=True）。
       18. **GUI 启动器 + overlay 悬浮窗 2026-09-07/08**：`src/ui/launcher.py`（启动按钮 +
@@ -555,8 +552,8 @@ Schraenke(17) / Polstermoebel(11) / Stuehle(11) / Werkbaenke(7) / Betten(5)。
           `overlay.py` 9 行步骤实时显示（LogTextBox 模式）。打包 `dist/launcher/launcher.exe`。
       19. **计算链路真机验证 + 家具路线三反转定案 2026-09-08**：
           - **计算 ✅**：`CalculationButtonStart` 触发（按钮变「取消」→变回「计算」=完成，
-            32 盏灯 <1 分钟）→ **UIA 直读结果**：`ResultsMonitorSurfaceResultAverage`=3135lx、
-            `UniformityAverage`=0.31。3135 远超 750lx = 自动排布偏密（链路通、策略待调）。
+            32 盏灯 <1 分钟）→ **UIA 直读结果**：`ResultsMonitorSurfaceResultAverage`=实测读数、
+            `UniformityAverage`=实测值。照度远超目标 = 自动排布偏密（链路通、策略待调）。
           - **「家具=空间」最终判死（架构师 3D 验收）**：UIA ListItem 双击导入成功
             （probe_furniture.evo，Space=23），但三重缺陷——22 家具各成**独立建筑物**
             （STF ROOM=建筑语义）、拆包 CoordSys3D 证实全堆原点 (0,0)（STF 绝对坐标被当
@@ -582,7 +579,7 @@ Schraenke(17) / Polstermoebel(11) / Stuehle(11) / Werkbaenke(7) / Betten(5)。
       21. **计算链路 vibe 增量 2026-09-09（进行中，明日续）**：vibe 冻结 4 模块
           （furniture→eval-area→calc→read-result，run 0b006474→3142b123→0b006474 修订），
           状态 ready_for_execution。**当日进展**：① 撞车发现——家具单件闭环/计算/UIA 直读
-          照度（3135lx）隔壁会话 9/8 已完成，Wave1/3/4 修订缩窄；② 新增
+          照度隔壁会话 9/8 已完成，Wave1/3/4 修订缩窄；② 新增
           `furniture_batch_task.py`（IR 适配 polygon→bbox/height_m 0.75m + 批量循环 +
           拆包验收 FurnitureElement），5 测试全绿；③ **批量首跑 22/22 失败**——
           真机教训：家具尺寸 Edit 只在「选中已建对象」后出现；DrawPoint 点画布中心
@@ -593,7 +590,7 @@ Schraenke(17) / Polstermoebel(11) / Stuehle(11) / Werkbaenke(7) / Betten(5)。
           点画布置入」序列，或评估区直上（CalculationObjectTool）。
           运行态：DIALux 已关（demo_room.evo 未保存家具，FurnitureElement=0 基线）。
       20. **家具识别 IR + 单件 Cuboid UIA 闭环 2026-09-08**：
-          - `src/parser/dxf.py` 真实 208 DWG/DXF 仍抽出 **1 房间 + 22 家具**；家具记录新增
+          - `src/parser/dxf.py` 样例图纸仍抽出 **1 房间 + 26 家具**；家具记录新增
             `room_id/kind/height_m/rotation/confidence/source_layer/source_entity`，中心点按房间
             包含关系归属，低置信度候选保留。
           - 新增 `FurnitureTask`、`src/executor/uia/furniture.py/.ps1`，工作台启动器增加显式

@@ -7,6 +7,8 @@
   （2026-09-07 产品化：导入 IES + ArrangementFromSpace 排布；缺 IES 跳过不崩）
 - 依赖注入：测试用假 import_fn / place_fn，不碰真机
 """
+from pathlib import Path
+
 import pytest
 
 from src.executor.kernel import execute_plan
@@ -139,6 +141,9 @@ def test_arrangement_channel_skips_missing_ies_not_raises():
     assert len(driver.luminaires) == 2
 
 
+@pytest.mark.skipif(
+    not (Path(__file__).resolve().parents[1] / "build" / "ies" / "NPTLED351_NVC.IES").exists(),
+    reason="build/ies/ 是运行产物（gitignore），缺少 IES 文件时跳过")
 def test_arrangement_channel_uses_injected_place_fn(monkeypatch):
     """注入 place_fn 后 arrangement 走注入函数（测试不碰真机）。"""
     ir = _ir(n_lums=1)
