@@ -106,7 +106,7 @@ DIALux 的文件对话框对 UIA 暴露不出任何 pattern，只有 Win32 看�
 `docs/plan-mvp3-demo-stage.md`（阶段性演示方案）、`docs/reference-dialux-ecosystem.md`（DIALux 生态资料清单）。
 家具路线计划：`docs/plan-furniture-recognition-placement.md`（识别 IR + FurnitureTask + 单件真机闭环）。
 标准流程文档：`docs/standard-dev-workflow.md`（软件开发七步链）、`docs/standard-dialux-run.md`（DIALux 运行 SOP，agent 可执行版）、
-`docs/reference-standard-task-flow-v1.md`（通用标准任务流程六步链 v1，来源 cjh 与 Hanako）。
+`docs/reference-standard-task-flow-v1.md`（通用标准任务流程六步链 v1，来源：项目内部）。
 
 ## 当前状态
 

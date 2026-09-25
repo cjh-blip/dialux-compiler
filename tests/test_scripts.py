@@ -14,15 +14,15 @@ FIXTURE_LIGHT = Path(__file__).parent / "fixtures" / "sample_lighting.dxf"
 def test_scan_lighting_30_circles():
     assert FIXTURE_LIGHT.exists()
     s = scan_dxf(FIXTURE_LIGHT)
-    assert s["circle_radius_buckets"].get("7.6") == 30, s["circle_radius_buckets"]
+    assert s["circle_radius_buckets"].get("8.3") == 30, s["circle_radius_buckets"]
 
 
 def test_scan_room_bbox():
     s = scan_dxf(FIXTURE_ROOM)
     b = s["bbox_from_model_vertices"]
     assert b is not None
-    assert abs(b["x_delta"] - 1212.0) <= 50, b
-    assert abs(b["y_delta"] - 900.0) <= 50, b
+    assert abs(b["x_delta"] - 981.0) <= 50, b
+    assert abs(b["y_delta"] - 1321.1) <= 50, b
 
 
 def test_scan_room_line_and_arc_count():

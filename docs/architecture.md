@@ -67,7 +67,7 @@ ActionPlan (JSONL): DIALux 操作序列
 | MVP1 | DWG → 房间多边形预览 | 真实图纸抽出房间 JSON，肉眼对齐 |
 | MVP2 | IR → DIALux 建空房间 | 只建几何，不放灯 |
 | MVP3 | 灯具表 → 已有房间上布灯 | 坐标正确，型号匹配 |
-| MVP4 | 计算 + 报告抽取 | 计算触发+UIA 读照度已真机验证（2026-09-08：3135lx/0.31，见 standard-dialux-run.md Step 9/10）；报告抽取未做 |
+| MVP4 | 计算 + 报告抽取 | 计算触发+UIA 读照度已真机验证（2026-09-08，见 standard-dialux-run.md Step 9/10）；报告抽取未做 |
 | MVP5 | 视觉自愈 + 异常处理 | 弹窗识别、重试、日志 |
 
 ## 五、坐标系与单位

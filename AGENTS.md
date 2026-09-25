@@ -14,7 +14,7 @@
 | 架构师/验收者 | 你（人） | 定 spec、审任务、验收、Git commit | 唯一决策者 |
 | 开发执行 | **DSH 桌面版**顶层会话（DeepSeek Harness） | 读写代码、跑门禁、改文档、驱动 DIALux | 直接执行，不再转包 |
 | 并行拆分 | DSH `subagent` / `subagent_fork` / `workflow` | 独立子任务、扇出调研 | 结果回主会话，不自行 commit |
-| 模型 | **deepseek-v4-flash**（`agent-default-model`） | 全链路 | 配置在 `C:\Users\cjh\.dsh\settings.yaml` |
+| 模型 | **deepseek-v4-flash**（`agent-default-model`） | 全链路 | 配置在 `~/.dsh/settings.yaml` |
 | 桌面操控 | 自研 `src/executor/uia/`（PowerShell UIA + Win32 窗口消息；`dialux_driver.ps1` 是唯一真机验证过的驱动） | 驱动 DIALux evo | 见 `KANBAN.md`「computer use 通道」；`dsh-computer-use-win` 插件仅是可选 OCR 后端 |
 | 看板 | `KANBAN.md`（人工维护） | 状态流转、验收留痕 | 只追踪不承载执行 |
 
@@ -73,7 +73,7 @@
 
 ## 成本与配置
 
-- 模型：**deepseek-v4-flash**，配置在 `C:\Users\cjh\.dsh\settings.yaml` 的 `agent-default-model`。
+- 模型：**deepseek-v4-flash**，配置在 `~/.dsh/settings.yaml` 的 `agent-default-model`。
 - **本会话无图像输入能力**：`settings.yaml` 里三个 provider 的模型全声明 `input: [ text ]`，
   截图判读靠 UIA 文本 + Windows OCR，不靠视觉模型。要开视觉需在 settings.yaml 里加
   `input: [ text, image ]` 的模型条目。
