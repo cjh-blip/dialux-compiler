@@ -1,0 +1,54 @@
+# === Bytecode / caches ===
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.eggs/
+*.egg
+dist/
+build_pkg/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# === Virtual envs ===
+.venv/
+venv/
+env/
+ENV/
+
+# === Project build artifacts (运行产物，非源码) ===
+# build/ 全量忽略：ODA/DWG 中间目录与 MVP 交付产物（room_layout.json / *.stf / *.svg）都落在这里，不入库。
+# 注意：ruff 默认尊重本文件，build/ 里的 debug_*.py 因此不计入 ruff 门禁条数 —— 改这份忽略面
+# 会改变 KANBAN.md「门禁实测」里的数字。
+build/
+build_pkg/
+
+# === IDE ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# === Editor local / OS ===
+# .trae/ 工具已淘汰（见 AGENTS.md），但 .trae/specs/ 仍是 MVP1 全部 AC/FR/NFR/TR 的唯一定义源，
+# 被这条规则挡在 git 外，换机 clone 即丢；两个处置选项见 KANBAN.md「遗留与待决」。
+.trae/
+
+# === 参考项目与分析产物（2026-09-04 git-project-analyzer 分析）===
+Mrite/
+better-genshin-impact/
+git-project-analyzer/
+analysis-reports/
+
+# === Vibe governed runtime（运行时产物，不入库）===
+.vibeskills/
+outputs/
