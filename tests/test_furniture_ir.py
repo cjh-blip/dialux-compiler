@@ -21,11 +21,11 @@ def _main_room(ir: dict) -> dict:
 
 
 def test_real_dxf_furniture_records_are_traceable():
-    """真实基线的 22 件家具必须带完整的执行前字段。"""
+    """真实基线的 26 件家具必须带完整的执行前字段。"""
     ir = parse_dxf(str(ROOM_DXF), ParseConfig.from_json(str(CFG)))
     room = _main_room(ir)
 
-    assert len(room["furniture"]) == 22
+    assert len(room["furniture"]) == 26
     for furniture in room["furniture"]:
         assert furniture["room_id"] == room["id"]
         assert furniture["id"]
