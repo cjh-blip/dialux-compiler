@@ -218,7 +218,7 @@ demo_run.exe --dwg 布局图.dwg --dwg-lighting 灯具图.dwg \
 |---|---|
 | Step 2 导入 DWG 做底图 | 解析器直接抽 IR，不导入 DIALux |
 | Step 3.1-3.3 多边形工具描房间 | STF 批量导入（坐标来自 DWG 精确提取） |
-| Step 3.5 阶梯座位 / Step 4 门窗 | ❌ 未做（礼堂场景才需要） |
+| Step 3.5 阶梯座位 / Step 4 门窗 | ❌ 未做（剧院场景才需要） |
 | Step 5 材质/反射率 | ⚠️ 待做（SOP 默认值：天棚0.75/墙0.5/地0.2，随计算一起） |
 | Step 6.1-6.2 灯具目录/放置 | ✅ 自动（IES 导入 + ArrangementFromSpace） |
 | Step 6.3 灯光场景 | ❌ 未做（调光/分区） |
