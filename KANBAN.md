@@ -11,16 +11,16 @@
 
 ## 门禁实测
 
-2026-09-08 重测，解释器 `D:\dev\anaconda3\python.exe`，
-Python 3.11.15，本机无 venv。这里是全仓唯一权威数字。
+2026-10-05 复核（开源脱敏后），Python 3.11 + 本仓依赖。这里是全仓唯一权威数字。
 
 | 门禁 | 命令 | 结果 |
 |---|---|---|
-| 测试 | `python -m pytest tests/ -q` | **237 passed / 0 failed / 0 error / 0 skipped**，退出码 0 |
+| 测试 | `python -m pytest tests/ -q` | **干净 clone：246 passed / 3 skipped，退出码 0**（3 项 skip 为缺 build/ 运行产物的环境性跳过） |
 | lint | `python -m ruff check .` | **0 errors（All checks passed）**，退出码 0，ruff **0.15.1** |
 
 - pytest 9.0.2，configfile `pytest.ini`（testpaths=tests、addopts=-ra、pythonpath=.）；
-  237 = 198 个 `def test_` + parametrize 展开；2026-09-08 新增家具 IR/Task 测试。
+  249 = 收集总数（干净 clone：246 passed + 3 skipped；2026-10-05 复核）。
+  历史门禁数字：237 = 198 个 `def test_` + parametrize 展开（2026-09-08，含家具 IR/Task 测试）。
   历史门禁数字（2026-09-06）：221 = 182 个 `def test_` + parametrize 展开；当日新增
   `tests/test_executor_kernel.py` 9 条（P2 execute_plan 派发/重试/HALT/进度）、
   `tests/test_driver_plan.py` 7 条（UiaDriver STF 批量 + place_luminaire stub）、
@@ -33,7 +33,7 @@ Python 3.11.15，本机无 venv。这里是全仓唯一权威数字。
   `better-genshin-impact/` 参考项目**（F401×4 + F541×4，都在它的 `.github/workflows/*.py`），
   **本仓自有代码在两种口径下都是 0**。旧记录里的「225 条」已失效（当时 `build/` 内有大量
   `debug_*.py`，现已 0 个）。
-- 唯一仍在的漂移风险：`requirements.txt` **未锁 ruff 版本**，升级到新规则集可能重新出错。
+- 漂移风险（2026-10-05 修正）：`requirements.txt` **已锁** `ruff==0.15.1`；ezdxf / pandas / openpyxl / jsonschema 仍为 `>=` 浮动，升级可能引起回归。
 - 仓库、`D:\dev`、`D:\`、用户级均无任何 ruff 配置文件（无 pyproject.toml / ruff.toml），
   走的是 ruff 默认规则集 E4/E7/E9+F。
 - 2026-09-03 的 `.gitignore` 调整**没有改动生效忽略面**：交付口径是「删除 4 条冗余规则行
@@ -101,7 +101,7 @@ MVP2 验收是用这条通道跑完的，不是人眼在工位点的。**这是 
 
 | 环节 | 事实 |
 |---|---|
-| DIALux 安装位置 | `D:\dev\DIAL GmbH\DIALux\DIALux.exe`（**不在 Program Files**）；启动后 launcher PID 的 `MainWindowHandle=0`，真 UI 在子进程 `DIALux_x64` |
+| DIALux 安装位置 | 以本机为准（默认 `C:\Program Files\DIAL GmbH\DIALux\DIALux.exe`，可用 `DIALUX_PATH` 覆盖）；启动后 launcher PID 的 `MainWindowHandle=0`，真 UI 在子进程 `DIALux_x64` |
 | UIA 可读性 | 主窗口 `ClassName=Window` / `AutomationId=MainWindow`；开始页 157 个后代，载入工程后 271 个。菜单、按钮、文件对话框全部有稳定 `AutomationId` |
 | 关键 AutomationId | 菜单 `File` → `Import` → `ImportStf` / `ImportDrawing` / `ImportIfc` / `ImportDlx4` / `ImportLuminaire` / `ImportFurniture`；按钮 `Save` / `Undo` / `Redo`；模式菜单 `MenuGotoConstructionMode`（展开后有 14 个 `MenuItem` 可 `Invoke`：`MenuGotoShowLuminaireArrangementTool` / `MenuGotoShowLuminaireCatalogPopup` / `MenuGotoShowFurnitureTool` / `MenuGotoShowCalculationObjectTool` 等） |
 | 驱动方式 | `ExpandCollapsePattern.Expand()` 展菜单 → `InvokePattern.Invoke()` 点菜单项 → 文件对话框里 `SelectionItemPattern.Select()` + `InvokePattern.Invoke()` 双击 ListItem。**全程零像素坐标** |

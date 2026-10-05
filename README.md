@@ -46,17 +46,18 @@ python src/main.py --dwg tests/fixtures/sample_room.dxf --dwg-lighting tests/fix
 python -m src.exporter.stf --validate build/demo_ir.json build/demo_out.stf
 ```
 
-有 DIALux evo 在场时（先打开 DIALux，再跑）：
+有 DIALux evo 时（先打开 DIALux，再跑）。默认读取仓库根目录的 `布局图.dwg` / `灯具图.dwg`；
+手头没有图纸时，可用仓库自带样例：
 
 ```bash
 # 解析 → 建立房间 → 导入灯具型号 → 排布 → 存盘，一条龙
-python scripts/demo_run.py --luminaires auto
-python scripts/demo_run.py --no-drive    # 只出 STF，不碰 DIALux
+python scripts/demo_run.py --dwg tests/fixtures/sample_room.dxf --dwg-lighting tests/fixtures/sample_lighting.dxf --luminaires auto
+python scripts/demo_run.py --dwg tests/fixtures/sample_room.dxf --dwg-lighting tests/fixtures/sample_lighting.dxf --no-drive    # 只出 STF，不碰 DIALux
 ```
 
 ## 实测状态
 
-- 249 个测试全绿（2026-09-25 实测）+ ruff 检查全过
+- 249 个测试：干净 clone 246 passed / 3 skipped（跳过项为缺 build/ 运行产物；2026-10-05 复核）+ ruff 检查全过
 - DIALux evo 14.0 真机跑通：菜单导航 → 文件对话框 → 导入 → 保存
 - 房间几何通过 STF 落地，顶点回环 11/11
 - **已知限制**：DIALux 完全忽略 STF 的灯具段（官方 export 标注 "in preparation"），灯具改走 computer use 通道

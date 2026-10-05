@@ -2,7 +2,7 @@
 
 这是「保底交付」——周报录屏就录这条命令。它把已经各自验证过的三段串起来：
 
-    1. 解析：DWG → DXF → IR（src.main 那条管道，已有 221 条测试）
+    1. 解析：DWG → DXF → IR（src.main 那条管道，测试见 tests/）
     2. 导出：IR → STF（房间几何真机验收过，顶点 11/11 回环命中）
     3. 落地：UIA 驱动 DIALux 导入 STF 并保存（src.executor.uia）
 
