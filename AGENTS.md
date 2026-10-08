@@ -43,6 +43,9 @@
 - 架构：`docs/architecture.md` 有全层表；**通用工作台**（全抄 BetterGI 架构）在
   `src/workbench/`（Task/Trigger/Flow/Config/Dispatcher）+ `src/tasks/<app>/`（具体软件任务，
   当前 `dialux/`；不绑定 DIALux，Zemax/Transport 复用同骨架）。GUI 启动器 `launcher` 内部跑 Flow 一条龙。
+- **DIALux 操作知识**：`docs/dialux-kb/DIALux_evo_官方KB_EN/README.md`（203 篇官方 KB 离线包）。
+  真机操作遇卡点先查它（菜单名/按钮名/动作前置条件），查不到再动手试；试出来的新路径回写到该目录，
+  不要只留在会话里。
 - 门禁命令（解释器用 `D:\dev\anaconda3\python.exe`，本机无 venv）：`python -m pytest tests/ -q`
   与 `python -m ruff check .`；实测结果见 `KANBAN.md`「门禁实测」。
 - ruff 条数绑定 ruff 版本与 `.gitignore` 忽略面（ruff 默认尊重 .gitignore），任一变化数字就变；
