@@ -23,7 +23,7 @@ import logging
 from pathlib import Path
 from typing import List, Optional
 
-from ...exporter.stf import ir_to_stf, select_rooms
+from ...exporter.stf import STF_ENCODING, ir_to_stf, select_rooms
 from ..actions import ActionResult
 
 logger = logging.getLogger(__name__)
@@ -117,7 +117,8 @@ class UiaDriver:
 
         stf_text = self._ir_to_stf(self.ir)
         self.stf_path.parent.mkdir(parents=True, exist_ok=True)
-        self.stf_path.write_text(stf_text, encoding="utf-8", newline="\n")
+        # 编码取导出器的同一常量（此前这里硬编码 utf-8，DIALux 里中文房名乱码）
+        self.stf_path.write_text(stf_text, encoding=STF_ENCODING, newline="\n")
         logger.info("STF 生成 %d 个房间 → %s", len(rooms), self.stf_path)
 
         if self._import is not None:

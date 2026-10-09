@@ -87,6 +87,23 @@ def test_stf_text_contains_room_coords():
     assert "6" in text  # 房间边长 6 米的坐标会出现在 STF 里
 
 
+def test_stf_from_uia_channel_is_gbk_so_chinese_room_name_reads_back():
+    """回归（2026-10-09 回执 2）：UIA 通道自己写 STF，编码必须与导出器同一常量。
+
+    此前这里是硬编码 ``utf-8``，中文房名在 DIALux 里乱码；而旧测试的房间是纯 ASCII
+    坐标，用 GBK 读也能过，所以这个坑一直抓不到——改用中文房名断言两件事：
+    GBK 读得出，UTF-8 读不出。
+    """
+    ir = _ir(n_lums=0)  # _ir 的 space name 是「房间{i}」
+    driver = UiaDriver(ir, import_fn=_fake_import)
+    execute_plan(build_action_plan(ir), driver)
+
+    raw = driver.stf_path.read_bytes()
+    assert "房间0" in raw.decode("gbk")
+    with pytest.raises(UnicodeDecodeError):
+        raw.decode("utf-8")
+
+
 def test_furniture_pseudo_spaces_not_exported():
     """家具伪 space（name 以 家具_ 开头）不导出 STF，但仍被幂等确认。"""
     ir = {

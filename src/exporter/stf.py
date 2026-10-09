@@ -22,7 +22,8 @@ LF 换行、紧凑数字（`Point1=0 0 0` 而非 `0.000 0.000 0.000`）；变的
    实测当时真实 IR 是 CW；parser 修掉「柜子变墙」后（t_0deee369）主房间换成墙线环候选，
    绕向变成 CCW —— 本模块仍不翻转。
 3. 54 边非凸多边形：evo 14.0 免费版实测导入成功，无顶点数/复杂度限制。
-4. 中文房间名：UTF-8 写出实测不乱码。
+4. 中文房间名：**UTF-8 写出会乱码**（2026-10-08 真机回归，更正本条早前结论）；
+   现役写出编码 GBK/CP936，唯一处定义见 `STF_ENCODING`。
 另：当时观察到的「房间轮廓混入家具边（柜子被识别成墙壁）」是 src/parser 的环搜索问题，
 已在 t_0deee369 修复（墙线环 pass + 锯齿择优 + 房间环平滑），非本模块行为。
 
@@ -55,6 +56,11 @@ logger = logging.getLogger(__name__)
 STF_FORMAT_VERSION = "1.0"
 PROG_NAME = "dialux-compiler"
 PROG_VERS = "0.1"
+
+# STF 写出编码：DIALux evo 的导入器按 CP936 读文本，写 UTF-8 会让中文房名变乱码
+# （2026-10-08 真机回归）。**唯一处定义**——write_stf 与 UiaDriver 都取它，
+# 别在别处另写一份（2026-10-09 回执 2 的处置）。
+STF_ENCODING = "gbk"
 
 #: 家具伪 space 名称前缀，与 src/parser/dxf.py::parse_dxf 和 scripts/render_preview_svg.py 一致
 FURNITURE_NAME_PREFIX = "家具_"
@@ -535,7 +541,7 @@ def write_stf(ir: Dict[str, Any], path: PathLike, *,
               normalize_ccw: bool = False,
               default_ceil_h: Optional[float] = None,
               date: Optional[str] = None,
-              encoding: str = "gbk") -> Path:
+              encoding: str = STF_ENCODING) -> Path:
     """把 ir_to_stf 的结果写到 path（LF 换行），返回写出的 Path。
 
     **编码默认 GBK/CP936**：DIALux evo 的 STF 导入器按 CP936 读文本，写 UTF-8 会让
