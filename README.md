@@ -57,10 +57,14 @@ python scripts/demo_run.py --dwg tests/fixtures/sample_room.dxf --dwg-lighting t
 
 ## 实测状态
 
-- 249 个测试：干净 clone 246 passed / 3 skipped（跳过项为缺 build/ 运行产物；2026-10-05 复核）+ ruff 检查全过
+- 250 个测试：干净 clone 247 passed / 3 skipped（跳过项为缺 build/ 运行产物；2026-10-09 复核）
 - DIALux evo 14.0 真机跑通：菜单导航 → 文件对话框 → 导入 → 保存
 - 房间几何通过 STF 落地，顶点回环 11/11
-- **已知限制**：DIALux 完全忽略 STF 的灯具段（官方 export 标注 "in preparation"），灯具改走 computer use 通道
+- **STF 默认写 GBK/CP936**（2026-10-08 真机结论）：DIALux 按 CP936 读文本，写 UTF-8 会让中文房名变乱码；
+  `write_stf()` 默认已改，CLI 加 `--encoding` 可覆盖
+- **灯具链路（2026-10-08 更正）**：STF 的灯具段导入后以占位符**完整保留**（36/36 实测），
+  可在 DIALux UI 批量替换为真灯并参与照度计算；另经「Luminaire Finder → Dx 送到 DIALux」通道
+  可带真实数据直接入库。早期记录的「DIALux 完全忽略灯具段」已过时。
 
 ## 环境要求
 
@@ -72,6 +76,8 @@ python scripts/demo_run.py --dwg tests/fixtures/sample_room.dxf --dwg-lighting t
 
 - 架构说明：`docs/architecture.md`
 - 状态板（进度 / 验收证据 / 门禁数字）：`KANBAN.md`
+- **DIALux 操作知识库（203 篇官方 KB 离线包）**：`docs/dialux-kb/DIALux_evo_官方KB_EN/README.md`
+  —— 真机操作遇卡点先查它，查不到再动手试；试出来的新路径回写到该目录，不要只留在会话里
 - IR 契约：`spec/ir.schema.json`
 - 计划与调研：`docs/plan-*.md`、`docs/reference-dialux-ecosystem.md`
 
