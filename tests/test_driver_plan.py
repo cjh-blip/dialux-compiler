@@ -74,7 +74,7 @@ def test_stf_import_happens_exactly_once():
     execute_plan(plan, driver)
     assert len(calls) == 1, "STF 必须整批导入一次，不能每个房间导一次"
     assert driver.stf_path.exists()
-    assert driver.stf_path.read_text(encoding="utf-8").strip()
+    assert driver.stf_path.read_text(encoding="gbk").strip()
 
 
 def test_stf_text_contains_room_coords():
@@ -83,7 +83,7 @@ def test_stf_text_contains_room_coords():
     driver = UiaDriver(ir, import_fn=_fake_import)
     plan = build_action_plan(ir)
     execute_plan(plan, driver)
-    text = driver.stf_path.read_text(encoding="utf-8")
+    text = driver.stf_path.read_text(encoding="gbk")
     assert "6" in text  # 房间边长 6 米的坐标会出现在 STF 里
 
 
