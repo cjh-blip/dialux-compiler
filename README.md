@@ -57,14 +57,13 @@ python scripts/demo_run.py --dwg tests/fixtures/sample_room.dxf --dwg-lighting t
 
 ## 实测状态
 
-- 250 个测试：干净 clone 247 passed / 3 skipped（跳过项为缺 build/ 运行产物；2026-10-09 复核）
+- 251 个测试：干净 clone **248 passed / 3 skipped**（跳过项为缺 build/ 运行产物；2026-10-12 复核）
 - DIALux evo 14.0 真机跑通：菜单导航 → 文件对话框 → 导入 → 保存
 - 房间几何通过 STF 落地，顶点回环 11/11
 - **STF 默认写 GBK/CP936**（2026-10-08 真机结论）：DIALux 按 CP936 读文本，写 UTF-8 会让中文房名变乱码；
   `write_stf()` 默认已改，CLI 加 `--encoding` 可覆盖
-- **灯具链路（2026-10-08 更正）**：STF 的灯具段导入后以占位符**完整保留**（36/36 实测），
-  可在 DIALux UI 批量替换为真灯并参与照度计算；另经「Luminaire Finder → Dx 送到 DIALux」通道
-  可带真实数据直接入库。早期记录的「DIALux 完全忽略灯具段」已过时。
+- **灯具链路（2026-10-11 更新）**：灯位由 STF/坐标链落地、灯具由 UI 通道落位；真机上**以阵列形态建成**（12 盏线形 3×4 ＋ 16 盏点灯 4×4，坐标与 IR 逐位一致）；占位符可批量替换为真灯并参与计算。
+  另经「Luminaire Finder → Dx 送到 DIALux」通道可带真实数据直接入库。早期记录的「DIALux 完全忽略灯具段」已过时。
 
 ## 环境要求
 
@@ -83,7 +82,8 @@ python scripts/demo_run.py --dwg tests/fixtures/sample_room.dxf --dwg-lighting t
 
 ## 架构灵感
 
-工作台架构参照 [BetterGI](https://github.com/babalae/better-genshin-impact)（GPL-3.0）。
+工作台架构参照 [BetterGI](https://github.com/babalae/better-genshin-impact)（GPL-3.0）——借鉴架构与设计，未复制其源码；
+相关模块在文件头逐处标注了对应关系。（借用范围比对：2026-10-12 只读逐处比对，未见表达级复制。）
 **本项目为独立实现，未复制其代码**；架构层面的借鉴在此声明。
 
 ## License
