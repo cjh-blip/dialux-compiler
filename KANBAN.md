@@ -11,15 +11,16 @@
 
 ## 门禁实测
 
-2026-10-05 复核（开源脱敏后），Python 3.11 + 本仓依赖。这里是全仓唯一权威数字。
+2026-10-16 复核（开源脱敏后口径沿用；`feat/ugr-report-tasks` 已合入），Python 3.11 + 本仓依赖。这里是全仓唯一权威数字。
 
 | 门禁 | 命令 | 结果 |
 |---|---|---|
-| 测试 | `python -m pytest tests/ -q` | **干净 clone：246 passed / 3 skipped，退出码 0**（3 项 skip 为缺 build/ 运行产物的环境性跳过） |
+| 测试 | `python -m pytest tests/ -q` | **干净 clone：260 passed / 3 skipped（总 263），退出码 0**（3 项 skip 为缺 build/ 运行产物的环境性跳过；有产物的 Windows 环境为 262 passed / 1 skipped，总数同为 263，2026-10-16 双侧复核） |
 | lint | `python -m ruff check .` | **0 errors（All checks passed）**，退出码 0，ruff **0.15.1** |
 
 - pytest 9.0.2，configfile `pytest.ini`（testpaths=tests、addopts=-ra、pythonpath=.）；
-  249 = 收集总数（干净 clone：246 passed + 3 skipped；2026-10-05 复核）。
+  263 = 收集总数（干净 clone：260 passed + 3 skipped；2026-10-16 合入 UGR/报表分支后复核）。
+  历史：249（2026-10-05 复核：246 + 3）。
   历史门禁数字：237 = 198 个 `def test_` + parametrize 展开（2026-09-08，含家具 IR/Task 测试）。
   历史门禁数字（2026-09-06）：221 = 182 个 `def test_` + parametrize 展开；当日新增
   `tests/test_executor_kernel.py` 9 条（P2 execute_plan 派发/重试/HALT/进度）、
@@ -283,7 +284,7 @@ Schraenke(17) / Polstermoebel(11) / Stuehle(11) / Werkbaenke(7) / Betten(5)。
       - 改造 `src/tasks/dialux/report_task.py`：占位 → 实做（报表 → 打印到 PDF → PyMuPDF 文本层）；
         新增 `src/executor/uia/report.py`（两段式：UIA 打印段 + 纯 Python 文本层段）＋ `report.ps1`（**骨架，未真机验证**）
       - 新增测试：`tests/test_ugr_task.py`（6）+ `tests/test_report_task.py`（6）
-      - **门禁**：`pytest` **260 passed / 1 skipped**；`ruff` all passed（2026-10-09 实测）
+      - **门禁**：`pytest` **260 passed / 3 skipped（干净 clone）／262 passed / 1 skipped（Windows）**；`ruff` all passed（2026-10-16 合入前双侧复核，总数 263；原 10-09 记录 260/1 系旧基线实测）
       - **遗留**：①控件 id 未真机校准（`ugr.ps1` 用 10-08 手工探测的猜测 id ＋ 逃生幽参数；`report.ps1` 仅骨架）→ 首次真机跑需校 id；②真机复跑（UGR 读回 16.2、报表落 PDF）未做
       - **顺带发现（待架构师定）**：`TaskContext` 不声明 `params`，`Flow` 也不传 `step.params`，
         而 `room_task` / `luminaires_task` / `report_task` 均读 `ctx.params` → 经 Flow 跑会 AttributeError。
