@@ -277,6 +277,18 @@ Schraenke(17) / Polstermoebel(11) / Stuehle(11) / Werkbaenke(7) / Betten(5)。
 
 ## MVP3 待办
 
+- [x] **UGR 任务 ＋ 报表实做（2026-10-09，Hanako 承接；待真机验证）**
+      - 新增 `src/executor/uia/ugr.py`（计算点 + UGR 度量 + 读回，契约同 `luminaire.py`）、
+        `src/tasks/dialux/ugr_task.py`（Task，落 `build/ugr_result.json`），并注册进 `tasks/dialux/__init__.py`
+      - 改造 `src/tasks/dialux/report_task.py`：占位 → 实做（报表 → 打印到 PDF → PyMuPDF 文本层）；
+        新增 `src/executor/uia/report.py`（两段式：UIA 打印段 + 纯 Python 文本层段）＋ `report.ps1`（**骨架，未真机验证**）
+      - 新增测试：`tests/test_ugr_task.py`（6）+ `tests/test_report_task.py`（6）
+      - **门禁**：`pytest` **260 passed / 1 skipped**；`ruff` all passed（2026-10-09 实测）
+      - **遗留**：①控件 id 未真机校准（`ugr.ps1` 用 10-08 手工探测的猜测 id ＋ 逃生幽参数；`report.ps1` 仅骨架）→ 首次真机跑需校 id；②真机复跑（UGR 读回 16.2、报表落 PDF）未做
+      - **顺带发现（待架构师定）**：`TaskContext` 不声明 `params`，`Flow` 也不传 `step.params`，
+        而 `room_task` / `luminaires_task` / `report_task` 均读 `ctx.params` → 经 Flow 跑会 AttributeError。
+        本次新代码用 `getattr(ctx, "params", None) or ctx.config` 防御；旧三处未动（超出白名单）。
+
 - [ ] MVP3：灯具表 → 已有房间布灯｜坐标正确、型号匹配（含 Q5 灯具表匹配 TODO）
 - [x] **MVP3 演示交付：悬浮小部件驱动 DIALux 全自动建壳｜2026-09-06 完成**
       计划文档 `docs/plan-mvp3-demo.md`。**一条命令 `python scripts/demo_run.py`
