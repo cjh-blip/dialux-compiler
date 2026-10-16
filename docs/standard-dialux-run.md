@@ -197,6 +197,30 @@ UIA 通道（2026-09-07 真机探针，见 `build/probe_20260907_channels.txt`�
 **[⚠️ 备选]** 结果也在 `Project/Results/Group_*/Dataillumqt0.rsl`（boost 序列化二进制，
 可扫 float 网格 10~20000lx），但 UIA 直读足够，不必解析。
 
+### Step 11: UGR 眩光计算（✅ 2026-10-08 真机探明；2026-10-09 产品化落地）
+
+**[需求]** 报告硬指标之一（UGR ≤ 19）。**免费版可算**——不需要 Pro 附加功能。
+
+**[执行]** `src.executor.uia.ugr::measure_ugr`（驱动 `ugr.ps1`，STEP 契约同 `luminaire.py`）：
+
+1. 计算元件模式（`MenuGotoShowCalculationObjectTool`）→ 计算点（`aid_NewPointCalculationObject`）；
+   坐标参数缺省则复用工程里已选中的计算点
+2. 点亮计算点属性里的 **UGR 度量**（附三参数：间距° / 视角 from° / to°）
+3. `CalculationButtonStart` → 轮询 `CalculationCommandText` 回到「计算」即为完成
+4. 读回结果面板「计算点 … (RUG)」节 → 最大眩光值
+
+**[实测数据（2026-10-08，演示房 36 盏）]**
+- 点位 (4.785, 5.5, 1.2)、步进 15°、范围 0-360° → **UGR = 16.2**（目标 ≤ 19.0）
+- 单次计算 **≈45 s**；值随朝向变动（rot 90° 时 U0 −0.02，UGR 敏感）
+
+**[参数]** 点坐标 / `step_deg` / `range_from` / `range_to` / `target`；`ugr.ps1` 带
+`-UgrCheckId` `-StepId` `-RangeFromId` `-RangeToId` `-ResultId` 逃生幽——
+**首次真机跑需校准控件 id**（现为 10-08 手工探测的猜测值）。
+
+**[验证]**
+- `build/ugr_result.json`（`ugr_max` / `target` / `step_deg` / `range` / `calc_sec`）
+- 报表「计算元件」节会印出该值（样本：交接区 `_给Mac_20261008_UGR报表样本\`）
+
 ## 一键执行
 
 ```bash
@@ -224,10 +248,13 @@ demo_run.exe --dwg 布局图.dwg --dwg-lighting 灯具图.dwg \
 | Step 6.3 灯光场景 | ❌ 未做（调光/分区） |
 | **家具建模（需求方新增）** | **🔄 探通（Cuboid 可写 + DrawExtrusionFurniture 拉伸，桌面轮廓来自 IR）** |
 | Step 7 评估区/工作面/计算 | **🔄 入口确认（SpaceTool 工作面 + CalculationButtonStart；评估区按桌面 0.75m）** |
-| Step 8 结果/报表 | ⚠️ 待定（拆包 ProjectData vs 报表 PDF 抽取，选路中） |
+| Step 8 结果/报表 | ✅ **定案**（报表 → 打印 → Microsoft Print to PDF → PyMuPDF 文本层；免费版可用，2026-10-08 双样本验证）；`report_task.py` 已实做，UIA 打印段**待真机校准** |
 
 ## 版本记录
 
+- v3（2026-10-09）：补 **Step 11 UGR 眩光计算**（计算点 + UGR 度量，免费版实测可算，16.2 / ≈45 s）；
+  报表导出定案（打印到 PDF + PyMuPDF 文本层）；`ugr.py` / `report.py` 产品化落地
+  （见仓库 `KANBAN.md` 2026-10-09 条；控件 id 待真机校准）
 - v2（2026-09-07）：补家具建模 + 桌面评估区 + 计算三通道（真机探针
   `build/probe_20260907_channels.txt`）；家具从「视觉增强」升为「评估区前置」
 - v1（2026-09-07）：定案，基于真机验证链路（放灯产品化 + exe 交付后）
