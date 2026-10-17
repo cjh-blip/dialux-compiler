@@ -4,10 +4,10 @@
 > 约定：`done` 必须挂「审查意见」（谁审、结论、遗留），否则不算完成。
 > 本文件是唯一现役状态板：门禁数字、几何口径、实现边界、遗留项的权威解释都在这里，
 > `AGENTS.md` 与 `README.md` 只放指针，不复述数字。
-> 上游（现役）：`plans\20260902_dialux-compiler_MVP2投产_计划.md`（Q15-Q20 定案 + S0-S4）
-> 上游（历史）：`plans\20260831_dialux-compiler_MVP1收尾_计划.md`（grill 6 条定案 + S1-S4）
+> 上游（现役）：`plans/20260902_dialux-compiler_MVP2投产_计划.md`（Windows 侧计划库；Q15-Q20 定案 + S0-S4）
+> 上游（历史）：`plans/20260831_dialux-compiler_MVP1收尾_计划.md`（Windows 侧计划库；grill 6 条定案 + S1-S4）
 > 角色库：`~/.claude/agents/`（目录即真身，数量不在文档里写死）；
-> 选型说明见 `.\plan\03_Resources\prompts\强AI工作流-角色库-v2.md`（v1 废弃）
+> 选型说明见 `plan/03_Resources/prompts/强AI工作流-角色库-v2.md`（v1 废弃）
 
 ## 门禁实测
 
@@ -35,7 +35,7 @@
   **本仓自有代码在两种口径下都是 0**。旧记录里的「225 条」已失效（当时 `build/` 内有大量
   `debug_*.py`，现已 0 个）。
 - 漂移风险（2026-10-05 修正）：`requirements.txt` **已锁** `ruff==0.15.1`；ezdxf / pandas / openpyxl / jsonschema 仍为 `>=` 浮动，升级可能引起回归。
-- 仓库、`D:\dev`、`D:\`、用户级均无任何 ruff 配置文件（无 pyproject.toml / ruff.toml），
+- 仓库、各级父目录、用户级均无任何 ruff 配置文件（无 pyproject.toml / ruff.toml），
   走的是 ruff 默认规则集 E4/E7/E9+F。
 - 2026-09-03 的 `.gitignore` 调整**没有改动生效忽略面**：交付口径是「删除 4 条冗余规则行
   （`build/_cache/`、`build/_dxf_out/`、`build/_dwg_in/`、`.trae/history/`）+ 调整注释」，
@@ -133,7 +133,7 @@ MVP2 验收是用这条通道跑完的，不是人眼在工位点的。**这是 
 和我们真正相关的只有 `DxImportLuminaire`（导入自有灯具文件）；替代口子是
 DIALux 自带的 `Gldf.Net.dll`（GLDF 开放标准），大概率不受这条许可门控——未验。
 
-**家具库 = 磁盘静态资源，可离线建索引**（`D:\dev\DIAL GmbH\DIALux\Media\Furnitures\M3D\`，76 MB）：
+**家具库 = 磁盘静态资源，可离线建索引**（`<DIALux 安装目录>\Media\Furnitures\M3D\`，76 MB）：
 
 | 分类 | 个数 | 分类 | 个数 |
 |---|---|---|---|
@@ -249,12 +249,12 @@ Schraenke(17) / Polstermoebel(11) / Stuehle(11) / Werkbaenke(7) / Betten(5)。
   - 已知边界：柜子一侧正好贴转角/隔墙时凹槽退化成转角台阶，几何上与真实转角不可区分，
     按设计不动（有专测记录）
 - [x] **evo 14.0 真机复验（原 MVP2 唯一阻塞项）**｜你（computer use 代跑，非架构师人眼）｜2026-09-05
-  - 做法：DIALux evo 14.0 真机（`D:\dev\DIAL GmbH\DIALux.exe`，PID 12740），全程 UI Automation
+  - 做法：DIALux evo 14.0 真机（`<DIALux 安装目录>\DIALux.exe`，PID 12740），全程 UI Automation
     驱动，无坐标盲点：`文件(aid=File)` → `导入(aid=Import)` → `STF 文件(aid=ImportStf)`
     → 文件对话框选中 `mvp2_fixed.stf` ListItem（Select+Invoke）→ `保存(aid=Save)`。
     工具链见「computer use 通道」。
   - **几何回环验收通过**，5 条硬证据：
-    1. 导入后窗口标题变 `D:\dev\dialux-compiler\build\mvp2_fixed.evo - DIALux evo 14.0 (64-Bit)`；
+    1. 导入后窗口标题变 `<仓库>\build\mvp2_fixed.evo - DIALux evo 14.0 (64-Bit)`；
        UIA 后代 157 → 271，`Save` 由 disabled 变 enabled，新出现 `MenuGotoConstructionMode`
        → 已进构造模式且工程已载入
     2. 房间名 `WALLRING_000_E18_2DF7` 落地：屏幕 OCR 读到 `WALLRING 000`，
@@ -536,7 +536,7 @@ Schraenke(17) / Polstermoebel(11) / Stuehle(11) / Werkbaenke(7) / Betten(5)。
             导入线性灯 → 排布线性灯 → 保存），子进程日志 Popen 逐行实时转发到半透明窗
             （LogTextBox 模式），加「同时启动 DIALux」勾选框（LinkedStart）+ 滚动日志区。
             执行时用户能实时看到每步在做什么。源码版 `python -m src.ui.overlay`。
-          （官方 STF/GLDF 格式、GitHub 参考库（本地 D:\dev\dialux-references\）：
+          （官方 STF/GLDF 格式、GitHub 参考库（本地克隆 `dialux-references/`）：
           STF-Exporter/EvoParse/eulumdat-py/dialux-mcp/DIALux_Toolkit，详见
           docs/reference-dialux-ecosystem.md，合规灯具配光获取路径）。STF 灯具段格式已
           按 STF-Exporter 修正（LumN.Pos 三行式），

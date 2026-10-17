@@ -31,7 +31,7 @@
 | 2026-08-17 ~ 09-04 | Hermes v0.21 追踪 + `claude --agent` 子员工执行 + cc-switch 供模型 | 已停用 |
 | 2026-09-05 起 | **DSH 桌面版直接执行 + deepseek-v4-flash**；桌面操控自研 `src/executor/uia/`（`dsh-computer-use-win` 仅是可选 OCR 后端） | **现役** |
 
-停用体系遗留在磁盘上的东西（`D:\dev\scripts\dispatch_claude.sh`、`~/.claude/agents/`、
+停用体系遗留在磁盘上的东西（本机脚本目录的 `dispatch_claude.sh`、`~/.claude/agents/`、
 cc-switch 配置）仍然存在但不在链路里，**勿再引用**。
 
 2026-09-03 曾记录一条治理缝隙：MVP2 两张看板卡实际由顶层会话执行，与当时「执行者必须是
