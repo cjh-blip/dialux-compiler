@@ -32,8 +32,8 @@ class UgrTask(Task):
     priority = 45
 
     def run(self, ctx: TaskContext) -> TaskResult:
-        # 注意：TaskContext 目前不声明 params（Flow 侧也没把 step.params 传下来），
-        # 故用 getattr 防御；同时兼容 config 通道（launcher 走 config）。
+        # params/config 双通道（2026-10-17 起 TaskContext 声明 params、Flow 逐步下发）；
+        # getattr 保留对旧 ctx 实现的兼容。
         params: Dict[str, Any] = getattr(ctx, "params", None) or (ctx.config or {})
 
         raw_point: Optional[list] = params.get("point")
