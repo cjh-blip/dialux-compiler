@@ -32,7 +32,8 @@ class ReportTask(Task):
     priority = 30
 
     def run(self, ctx: TaskContext) -> TaskResult:
-        # TaskContext 不声明 params（见 ugr_task 同注），getattr 防御 + config 兼容。
+        # params/config 双通道（2026-10-17 起 TaskContext 声明 params、Flow 逐步下发）；
+        # getattr 保留对旧 ctx 实现的兼容。
         params: Dict[str, Any] = getattr(ctx, "params", None) or (ctx.config or {})
         mode = params.get("mode", "export")
         report_out = params.get("report_out") or DEFAULT_DIR
