@@ -15,11 +15,12 @@
 
 | 门禁 | 命令 | 结果 |
 |---|---|---|
-| 测试 | `python -m pytest tests/ -q` | **干净 clone：260 passed / 3 skipped（总 263），退出码 0**（3 项 skip 为缺 build/ 运行产物的环境性跳过；有产物的 Windows 环境为 262 passed / 1 skipped，总数同为 263，2026-10-16 双侧复核） |
+| 测试 | `python -m pytest tests/ -q` | **干净 clone：262 passed / 3 skipped（总 265），退出码 0**（3 项 skip 为缺 build/ 运行产物的环境性跳过；2026-10-17 Mac 实测；有产物的 Windows 环境预期 264 / 1、总数同为 265，待他们复核；原 2026-10-16 双侧复核为总 263） |
 | lint | `python -m ruff check .` | **0 errors（All checks passed）**，退出码 0，ruff **0.15.1** |
 
 - pytest 9.0.2，configfile `pytest.ini`（testpaths=tests、addopts=-ra、pythonpath=.）；
-  263 = 收集总数（干净 clone：260 passed + 3 skipped；2026-10-16 合入 UGR/报表分支后复核）。
+  265 = 收集总数（干净 clone：262 passed + 3 skipped；2026-10-17 加 TaskContext/Flow 回归 2 项）。
+  历史：263 = 2026-10-16 合入 UGR/报表分支后复核（260 + 3）；
   历史：249（2026-10-05 复核：246 + 3）。
   历史门禁数字：237 = 198 个 `def test_` + parametrize 展开（2026-09-08，含家具 IR/Task 测试）。
   历史门禁数字（2026-09-06）：221 = 182 个 `def test_` + parametrize 展开；当日新增
