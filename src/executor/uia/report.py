@@ -73,6 +73,7 @@ def export_report(
     timeout_s: int = 180,
     wait_timeout_s: int = 60,
     cancel_check: Optional[callable] = None,
+    on_step: Optional[callable] = None,
     **id_overrides: str,
 ) -> List[StepEvent]:
     """驱动 DIALux 报表打印链，产出 PDF（真机段，未验证）。
@@ -153,6 +154,8 @@ def export_report(
             "OK" if ok else "失败",
             f"（{detail}）" if detail else "",
         )
+        if on_step is not None:
+            on_step(ev)
         if not ok:
             break
 

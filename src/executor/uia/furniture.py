@@ -28,8 +28,9 @@ def place_furniture(
     process_name: str = "DIALux_x64",
     timeout_s: int = 180,
     cancel_check: Optional[callable] = None,
+    on_step: Optional[callable] = None,
 ) -> List[StepEvent]:
-    """在当前 DIALux 工程中放置一个 IR 家具记录。"""
+    """在当前 DIALux 工程中放置一个 IR 家具记录。`on_step`＝每个 STEP 事件的流式回调（队列 E 阶段1，缺省 None）。"""
     if not FURNITURE_PS1.exists():
         raise FileNotFoundError(f"家具驱动脚本缺失：{FURNITURE_PS1}")
     _validate_furniture(furniture)
@@ -76,6 +77,8 @@ def place_furniture(
             progress=min(100.0, len(events) / len(_STEPS) * 100.0),
         )
         events.append(event)
+        if on_step is not None:
+            on_step(event)
         if not ok:
             break
     try:

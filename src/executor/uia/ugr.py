@@ -112,6 +112,7 @@ def measure_ugr(
     timeout_s: int = 120,
     calc_timeout_s: int = 300,
     cancel_check: Optional[callable] = None,
+    on_step: Optional[callable] = None,
     **id_overrides: str,
 ) -> UgrResult:
     """在当前 DIALux 工程里做一次 UGR 度量并读回最大值。
@@ -206,6 +207,8 @@ def measure_ugr(
             "OK" if ok else "失败",
             f"（{detail}）" if detail else "",
         )
+        if on_step is not None:
+            on_step(ev)
         if name == "ugr-calc" and ok:
             m = re.search(r"sec=(\d+)", detail)
             if m:
