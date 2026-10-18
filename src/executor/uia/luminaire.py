@@ -49,6 +49,7 @@ def place_luminaires(
     process_name: str = "DIALux_x64",
     timeout_s: int = 180,
     cancel_check: Optional[callable] = None,
+    on_step: Optional[callable] = None,
 ) -> List[StepEvent]:
     """把指定灯具 IES 导入当前 DIALux 工程并按空间自动排布、保存。
 
@@ -57,6 +58,7 @@ def place_luminaires(
         prototype_name: CatalogListBox 里选定的原型名；空则从文件名推导。
         count_x/count_y: 排布网格行列数；0 = 让 DIALux 按空间自动决定。
         cancel_check: 每读一行调用，返回 True 时中止（停在步与步之间，DIALux 内是半成品）。
+        on_step: 每个 STEP 事件到达时回调（队列 E 阶段1 新增，默认 None 不改行为；流式进度用）。
 
     返回: StepEvent 列表；``succeeded(events)`` 判断是否跑完。
     抛 FileNotFoundError 当 .ps1 或 ies 缺失；RuntimeError 当 PowerShell 起不来。
@@ -123,6 +125,8 @@ def place_luminaires(
         events.append(ev)
         logger.info("[%5.1f%%] %s %s%s", ev.progress, ev.title,
                     "OK" if ok else "失败", f"（{detail}）" if detail else "")
+        if on_step is not None:
+            on_step(ev)
         if not ok:
             # 失败即停：脚本已在失败处 exit 1
             break
