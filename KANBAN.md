@@ -15,11 +15,12 @@
 
 | 门禁 | 命令 | 结果 |
 |---|---|---|
-| 测试 | `python -m pytest tests/ -q` | **干净 clone：268 passed / 3 skipped（总 271），退出码 0**（3 项 skip 为缺 build/ 运行产物的环境性跳过；2026-10-18 Mac 实测，+6＝real_action runner 契约 6 项；有产物的 Windows 环境预期 270 / 1、总数同为 271，待他们复核；前次 2026-10-17 实测 262+3、原 2026-10-16 双侧复核为总 263） |
+| 测试 | `python -m pytest tests/ -q` | **干净 clone：278 passed / 3 skipped（总 281），退出码 0**（3 项 skip 为缺 build/ 运行产物的环境性跳过；2026-10-19 Mac 实测，+10＝E2 改码静态契约 10 项（`test_e2_ps1_contracts.py`）；有产物的 Windows 环境预期 277 / 1、总数同为 281，待他们复核；前次 2026-10-18 实测 268+3＝271、原 2026-10-16 双侧复核为总 263） |
 | lint | `python -m ruff check .` | **0 errors（All checks passed）**，退出码 0，ruff **0.15.1** |
 
 - pytest 9.0.2，configfile `pytest.ini`（testpaths=tests、addopts=-ra、pythonpath=.）；
-  271 = 收集总数（干净 clone：268 passed + 3 skipped；2026-10-18 加 real_action runner 契约 6 项）；
+  281 = 收集总数（干净 clone：278 passed + 3 skipped；2026-10-19 加 E2 改码静态契约 10 项）；
+  271 = 2026-10-18 加 real_action runner 契约 6 项（265 → 271）；
   265 = 2026-10-17 加 TaskContext/Flow 回归 2 项（262 + 3）。
   历史：263 = 2026-10-16 合入 UGR/报表分支后复核（260 + 3）；
   历史：249（2026-10-05 复核：246 + 3）。
