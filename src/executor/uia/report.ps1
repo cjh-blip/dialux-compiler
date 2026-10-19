@@ -26,7 +26,9 @@ param(
     [int]$WaitTimeoutMs = 60000,
     [int]$DialogTimeoutMs = 15000,
     [string]$ReportMenuId = '',
+    [int]$ReportTabIndex = -1,
     [string]$PrintMenuId = '',
+    [string]$PrinterComboId = '',
     [string]$FileNameId = '',
     [string]$SaveButtonId = ''
 )
@@ -51,6 +53,7 @@ namespace RP {
     [DllImport("user32.dll", CharSet=CharSet.Auto)] public static extern IntPtr FindWindowEx(IntPtr p, IntPtr c, string cls, string win);
     [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr h, int id);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll", CharSet=CharSet.Auto)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int max);
     [DllImport("user32.dll", CharSet=CharSet.Auto)] public static extern bool SetWindowText(IntPtr h, string t);
     [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h, int m, IntPtr w, IntPtr l);
   }
@@ -100,18 +103,43 @@ function ClickCenter([object]$el) {
     [RP.U]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
     [RP.U]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
 }
-function Wait-Dialog([string]$titleMatch, [int]$ms) {
-    # Wait for a #32770 dialog whose title matches (ASCII pattern), return hwnd.
+function Wait-Dialog([int]$ms, [IntPtr]$skipHwnd) {
+    # Wait for a visible #32770 OWNED BY DIALUX, optionally skipping one hwnd.
+    # 2026-10-19 fixes (measured on the real machine):
+    #   (a) $null marshals to an EMPTY string, so the old call only matched
+    #       blank-title windows -- the same trap dialux_driver.ps1 documented;
+    #   (b) no process filter: any application's dialog could be returned;
+    #   (c) no way to wait for the SECOND dialog, but print -> save IS two.
     $sw = [Diagnostics.Stopwatch]::StartNew()
     while ($sw.ElapsedMilliseconds -lt $ms) {
-        $h = [RP.U]::FindWindowEx([IntPtr]::Zero, [IntPtr]::Zero, '#32770', $null)
+        $h = [RP.U]::FindWindowEx([IntPtr]::Zero, [IntPtr]::Zero, '#32770', [NullString]::Value)
         while ($h -ne [IntPtr]::Zero) {
-            if ([RP.U]::IsWindowVisible($h)) { return $h }
-            $h = [RP.U]::FindWindowEx([IntPtr]::Zero, $h, '#32770', $null)
+            if ($h -ne $skipHwnd -and [RP.U]::IsWindowVisible($h)) {
+                $dpid = 0
+                [void][RP.U]::GetWindowThreadProcessId($h, [ref]$dpid)
+                if ($dpid -eq $proc.Id) { return $h }
+            }
+            $h = [RP.U]::FindWindowEx([IntPtr]::Zero, $h, '#32770', [NullString]::Value)
         }
         Start-Sleep -Milliseconds 250
     }
     return [IntPtr]::Zero
+}
+function Get-DlgUiText([IntPtr]$h) {
+    # Joined UIA names of the dialog and its descendants. Used to CLASSIFY
+    # print vs save without ever putting a Chinese title in this ASCII file.
+    try {
+        $w = [System.Windows.Automation.AutomationElement]::FromHandle($h)
+        $head = ''
+        try { $head = [string]$w.Current.Name } catch { }
+        $all = $w.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+                          [System.Windows.Automation.Condition]::TrueCondition)
+        $sb = New-Object System.Text.StringBuilder 4096
+        for ($i = 0; $i -lt $all.Count; $i++) {
+            try { [void]$sb.Append($all.Item($i).Current.Name).Append(' ') } catch { }
+        }
+        return ($head + ' ' + $sb.ToString())
+    } catch { return '' }
 }
 
 # ------------------------------------------------------------------ context
@@ -140,47 +168,222 @@ if ($attached) { [void][RP.U]::AttachThreadInput($tidMe, $tidFg, $false) }
 Start-Sleep -Milliseconds 400
 
 # ------------------------------------------------------- 1) report mode
-# NOTE: pin with -ReportMenuId on first real run; fallback scans for an id
-# containing "Report".
+# Measured 2026-10-19 E2: the entry is a TabItem inside 'ModeSelectionTabControl'
+# with NO AutomationId, NO Invoke pattern, SelectionItem ONLY -- the old
+# Find-IdPattern 'Report|report' scanned the whole tree and hit zero. Order:
+#   1) -ReportMenuId (caller pinned id) wins;
+#   2) else the id pattern scan (still right on English builds);
+#   3) else TabItems of ModeSelectionTabControl: Name match first, then the
+#      -ReportTabIndex ordinal. The ordinal is an ESCAPE HATCH whose index was
+#      never measured here (only coordinates 701,158 were), so the default is
+#      -1 = disabled -- we do not guess an index.
 $mode = $null
-if ($ReportMenuId -ne '') { $mode = ById $ReportMenuId 4000 }
-else { $mode = Find-IdPattern 'Report|report' 4000 }
-if ($mode -eq $null) { Fail 'report-mode' 'report-entry-not-found-use-ReportMenuId' }
-try { $mode.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke() }
-catch { Fail 'report-mode' 'report-entry-invoke-failed' }
+$modeVia = ''
+if ($ReportMenuId -ne '') { $mode = ById $ReportMenuId 4000; if ($mode -ne $null) { $modeVia = 'id' } }
+if ($mode -eq $null) {
+    $mode = Find-IdPattern 'Report|report' 3000
+    if ($mode -ne $null) { $modeVia = 'id-pattern' }
+}
+if ($mode -eq $null) {
+    $tabs = ById 'ModeSelectionTabControl' 3000
+    if ($tabs -ne $null) {
+        $tc = New-Object System.Windows.Automation.PropertyCondition(
+            [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+            [System.Windows.Automation.ControlType]::TabItem)
+        $all = $tabs.FindAll([System.Windows.Automation.TreeScope]::Descendants, $tc)
+        $items = @()
+        for ($i = 0; $i -lt $all.Count; $i++) { $items += $all.Item($i) }
+        foreach ($ti in $items) {
+            $nm = ''
+            try { $nm = [string]$ti.Current.Name } catch { }
+            if ($nm -match 'Report|report') { $mode = $ti; $modeVia = 'tab-name'; break }
+        }
+        if ($mode -eq $null -and $ReportTabIndex -ge 0 -and $ReportTabIndex -lt $items.Count) {
+            $mode = $items[$ReportTabIndex]
+            $modeVia = ("tab-index={0}" -f $ReportTabIndex)
+        }
+    }
+}
+if ($mode -eq $null) {
+    Fail 'report-mode' 'report-entry-not-found-use-ReportMenuId-or-ReportTabIndex'
+}
+$acted = $false
+try { $mode.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke(); $acted = $true }
+catch { }
+if (-not $acted) {
+    try {
+        $mode.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
+        $acted = $true
+    } catch { Fail 'report-mode' 'report-entry-neither-invoke-nor-select' }
+}
 Start-Sleep -Milliseconds 1500
-Emit 'report-mode' 'ok'
+Emit 'report-mode' 'ok' ("via=" + $modeVia)
 
 # ------------------------------------------------------- 2) trigger print
+# Measured 2026-10-19 E2: the entry id is ButtonPrintDocument, and a raw
+# Find-IdPattern 'Print' ambiguously hits ReportModePrint (a radio button), so
+# the pinned id or the measured id wins before the pattern scan.
 $pr = $null
-if ($PrintMenuId -ne '') { $pr = ById $PrintMenuId 4000 }
-else { $pr = Find-IdPattern 'Print|print' 4000 }
+$prVia = ''
+if ($PrintMenuId -ne '') { $pr = ById $PrintMenuId 4000; if ($pr -ne $null) { $prVia = 'id' } }
+if ($pr -eq $null) { $pr = ById 'ButtonPrintDocument' 2500; if ($pr -ne $null) { $prVia = 'measured-id' } }
+if ($pr -eq $null) { $pr = Find-IdPattern 'Print|print' 3000; if ($pr -ne $null) { $prVia = 'pattern' } }
 if ($pr -eq $null) { Fail 'report-print' 'print-entry-not-found-use-PrintMenuId' }
 try { $pr.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke() }
 catch { ClickCenter $pr }
 Start-Sleep -Milliseconds 1200
-Emit 'report-print' 'ok'
+Emit 'report-print' 'ok' ("via=" + $prVia)
 
-# ------------------------------------------------------- 3) save dialog
-# Assumes the default printer is already "Microsoft Print to PDF"; the print
-# dialog may or may not appear. Handle the save (#32770) dialog with the
-# proven file-dialog technique.
-$dlg = Wait-Dialog '' $DialogTimeoutMs
-if ($dlg -eq [IntPtr]::Zero) { Fail 'report-save' 'save-dialog-not-found' }
+# ------------------------------------- 3) print dialog -> printer -> save dialog
+# Measured 2026-10-19 E2: the Windows PRINT dialog opens first (#32770; print
+# button = GetDlgItem(1) 'Print(&P)', cancel = 2), and the machine's default
+# printer is an OFFLINE device, so the PDF printer must be chosen INSIDE this
+# dialog -- system settings are outside the allowed scope. The Print-to-PDF
+# SAVE window follows as the second dialog.
+# Classification uses UIA text markers measured on the machine (the printer
+# list carries 'Microsoft Print to PDF' / 'OneNote' / 'Brother'; the save
+# window's type row carries '.pdf'). An unclassifiable dialog FAILS with its
+# text attached instead of guessing -- no silent mis-routing.
+$hDlg1 = Wait-Dialog $DialogTimeoutMs ([IntPtr]::Zero)
+if ($hDlg1 -eq [IntPtr]::Zero) { Fail 'report-printer' 'print-dialog-not-found' }
+$txt1 = Get-DlgUiText $hDlg1
+$hSave = [IntPtr]::Zero
+
+if ($txt1 -match 'Print to PDF|OneNote|Brother') {
+    # --- select the printer: UIA expand + select on the printer combo;
+    #     -PrinterComboId (Win32 control id) pins the combo when auto fails.
+    $comboEl = $null
+    if ($PrinterComboId -ne '') {
+        $cw = [RP.U]::GetDlgItem($hDlg1, [int]$PrinterComboId)
+        if ($cw -eq [IntPtr]::Zero) { Fail 'report-printer' 'printer-combo-id-not-found' }
+        try { $comboEl = [System.Windows.Automation.AutomationElement]::FromHandle($cw) } catch { }
+    } else {
+        try {
+            $dw = [System.Windows.Automation.AutomationElement]::FromHandle($hDlg1)
+            $cc = New-Object System.Windows.Automation.PropertyCondition(
+                [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                [System.Windows.Automation.ControlType]::ComboBox)
+            $comboEl = $dw.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $cc)
+        } catch { }
+    }
+    $printerOk = $false
+    if ($comboEl -ne $null) {
+        try {
+            $comboEl.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern).Expand()
+            Start-Sleep -Milliseconds 600
+            $lc = New-Object System.Windows.Automation.PropertyCondition(
+                [System.Windows.Automation.AutomationElement]::NameProperty, 'Microsoft Print to PDF')
+            $li = $comboEl.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $lc)
+            if ($li -ne $null) {
+                $li.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
+                $printerOk = $true
+            }
+            try { $comboEl.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern).Collapse() } catch { }
+        } catch { }
+    }
+    if (-not $printerOk) {
+        Fail 'report-printer' 'printer-not-selectable-use-PrinterComboId'
+    }
+    Start-Sleep -Milliseconds 500
+    $hPrint = [RP.U]::GetDlgItem($hDlg1, 1)          # measured: print button = GetDlgItem(1)
+    if ($hPrint -eq [IntPtr]::Zero) { Fail 'report-printer' 'print-button-not-found' }
+    [void][RP.U]::SendMessage($hPrint, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)   # BM_CLICK
+    Emit 'report-printer' 'ok' 'printer=Microsoft Print to PDF'
+    $hSave = Wait-Dialog $DialogTimeoutMs $hDlg1     # the save window is the NEXT dialog
+    if ($hSave -eq [IntPtr]::Zero) { Fail 'report-save' 'save-dialog-not-found' }
+} elseif ($txt1 -match '\.pdf') {
+    Emit 'report-printer' 'ok' 'print-dialog-absent-default-is-pdf'
+    $hSave = $hDlg1
+} else {
+    $snip = ($txt1 -replace '\s+', ' ')
+    if ($snip.Length -gt 120) { $snip = $snip.Substring(0, 120) }
+    Fail 'report-printer' ("unclassified-dialog ui='{0}'" -f $snip)
+}
+
+# ------------------------------------------------------- 4) save dialog
+# Measured 2026-10-19 E2: the Print-to-PDF window is custom -- NO 1148, the
+# filename row is the wide ComboBox with the SMALLEST top (measured 1968172 at
+# T=519 vs the type row at T=546; the wrong pick wrote the type field once),
+# its inner Edit is 14748318, save = GetDlgItem(1). SetWindowText there reads
+# back but never renders and BM_CLICK then does nothing; clipboard + WM_PASTE
+# lands in about a second.
 $combo = $null
-if ($FileNameId -ne '') { $combo = [RP.U]::GetDlgItem($dlg, [int]$FileNameId) }
-else { $combo = [RP.U]::GetDlgItem($dlg, 1148) }   # ComboBoxEx32 (file dialog id)
-if ($combo -eq [IntPtr]::Zero) { Fail 'report-save' 'file-name-combo-not-found' }
-[void][RP.U]::SetWindowText($combo, $PdfPath)
-$edit = [RP.U]::FindWindowEx($combo, [IntPtr]::Zero, 'Edit', $null)
-if ($edit -ne [IntPtr]::Zero) { [void][RP.U]::SetWindowText($edit, $PdfPath) }
-Start-Sleep -Milliseconds 400
+$hEditS = [IntPtr]::Zero
+if ($FileNameId -ne '') {
+    $combo = [RP.U]::GetDlgItem($hSave, [int]$FileNameId)
+}
+if ($combo -eq [IntPtr]::Zero -or $combo -eq $null) {
+    # auto: ComboBoxes that own an inner Edit, lowest top wins (measured rule)
+    try {
+        $dw = [System.Windows.Automation.AutomationElement]::FromHandle($hSave)
+        $cc = New-Object System.Windows.Automation.PropertyCondition(
+            [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+            [System.Windows.Automation.ControlType]::ComboBox)
+        $ec = New-Object System.Windows.Automation.PropertyCondition(
+            [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+            [System.Windows.Automation.ControlType]::Edit)
+        $all = $dw.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cc)
+        $bestY = [double]::MaxValue
+        $bestEl = $null
+        $bestEdit = $null
+        for ($i = 0; $i -lt $all.Count; $i++) {
+            $el = $all.Item($i)
+            $ed = $el.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $ec)
+            if ($ed -eq $null) { continue }
+            $y = $el.Current.BoundingRectangle.Y
+            if ($y -lt $bestY) { $bestY = $y; $bestEl = $el; $bestEdit = $ed }
+        }
+        if ($bestEl -ne $null) {
+            $combo = [IntPtr]$bestEl.Current.NativeWindowHandle
+            if ($bestEdit.Current.NativeWindowHandle -ne 0) {
+                $hEditS = [IntPtr]$bestEdit.Current.NativeWindowHandle
+            }
+        }
+    } catch { }
+}
+if (($combo -eq [IntPtr]::Zero -or $combo -eq $null) -and $hEditS -eq [IntPtr]::Zero) {
+    Fail 'report-save' 'file-name-combo-not-found'
+}
+if ($hEditS -eq [IntPtr]::Zero -and $combo -ne [IntPtr]::Zero) {
+    $hEditS = [RP.U]::FindWindowEx($combo, [IntPtr]::Zero, 'Edit', [NullString]::Value)
+    if ($hEditS -eq [IntPtr]::Zero) {
+        $hIn = [RP.U]::FindWindowEx($combo, [IntPtr]::Zero, 'ComboBox', [NullString]::Value)
+        if ($hIn -ne [IntPtr]::Zero) {
+            $hEditS = [RP.U]::FindWindowEx($hIn, [IntPtr]::Zero, 'Edit', [NullString]::Value)
+        }
+    }
+}
+$fillH = if ($hEditS -ne [IntPtr]::Zero) { $hEditS } else { $combo }
+$fillVia = 'clipboard'
+$oldClip = $null
+$clipOk = $false
+try { $oldClip = Get-Clipboard -Raw; $clipOk = $true } catch { }
+try {
+    Set-Clipboard -Value $PdfPath
+    [void][RP.U]::SendMessage($fillH, 0x0302, [IntPtr]::Zero, [IntPtr]::Zero)   # WM_PASTE
+    if ($hEditS -ne [IntPtr]::Zero -and $fillH -ne $hEditS) {
+        [void][RP.U]::SendMessage($hEditS, 0x0302, [IntPtr]::Zero, [IntPtr]::Zero)
+    }
+    Start-Sleep -Milliseconds 300
+} catch { $fillVia = 'settext' }
+if ($clipOk) { try { Set-Clipboard -Value $oldClip } catch { } }   # restore the user's clipboard
+$sb = New-Object System.Text.StringBuilder 1024
+[void][RP.U]::GetWindowText($fillH, $sb, 1024)
+if ($sb.ToString().Trim().Length -eq 0) {
+    # fallback: legacy double-layer write (right on some builds)
+    [void][RP.U]::SetWindowText($fillH, $PdfPath)
+    Start-Sleep -Milliseconds 400
+    $sb2 = New-Object System.Text.StringBuilder 1024
+    [void][RP.U]::GetWindowText($fillH, $sb2, 1024)
+    if ($sb2.ToString().Trim().Length -eq 0) { Fail 'report-save' 'filename-fill-had-no-effect' }
+    $fillVia = 'settext-fallback'
+}
 $saveBtn = $null
-if ($SaveButtonId -ne '') { $saveBtn = [RP.U]::GetDlgItem($dlg, [int]$SaveButtonId) }
-else { $saveBtn = [RP.U]::GetDlgItem($dlg, 1) }    # IDOK
+if ($SaveButtonId -ne '') { $saveBtn = [RP.U]::GetDlgItem($hSave, [int]$SaveButtonId) }
+else { $saveBtn = [RP.U]::GetDlgItem($hSave, 1) }    # measured: save = GetDlgItem(1)
 if ($saveBtn -eq [IntPtr]::Zero) { Fail 'report-save' 'save-button-not-found' }
 [void][RP.U]::SendMessage($saveBtn, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)  # BM_CLICK
-Emit 'report-save' 'ok' ("path=" + $PdfPath)
+Emit 'report-save' 'ok' ("via={0} path={1}" -f $fillVia, $PdfPath)
 
 # ------------------------------------------------------- 4) wait for the file
 $sw = [Diagnostics.Stopwatch]::StartNew()

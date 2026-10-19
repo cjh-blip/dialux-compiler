@@ -123,8 +123,9 @@ def measure_ugr(
         step_deg / range_from / range_to: 视角评估参数（默认 15° / 0-360°）。
         target: 目标眩光上限（仅随结果回传，供报告标注）。
         id_overrides: 逃生舱——``ugr_check_id`` / ``step_id`` / ``range_from_id``
-            / ``range_to_id`` / ``result_id``，用于钉死 DIALux 未文档化的
-            控件 AutomationId（参见 ugr.ps1 头部说明）。
+            / ``range_to_id`` / ``result_id`` / ``calc_button_id``，用于钉死
+            DIALux 未文档化的控件 AutomationId（参见 ugr.ps1 头部说明；
+            键名一律 snake_case，与 real_action 摊 kwargs 的口径一致）。
         cancel_check: 每读一行调用，返回 True 时中止（停在步与步之间）。
 
     返回: ``UgrResult``；``result.ok`` 判断是否跑完，``result.events`` 看逐步状态。
@@ -151,6 +152,7 @@ def measure_ugr(
         ("range_from_id", "-RangeFromId"),
         ("range_to_id", "-RangeToId"),
         ("result_id", "-ResultId"),
+        ("calc_button_id", "-CalcButtonId"),
     ):
         val = id_overrides.get(key)
         if val:

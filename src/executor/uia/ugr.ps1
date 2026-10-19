@@ -26,6 +26,15 @@
 ## evo are not documented. The -UgrCheckId / -StepId / -RangeFromId /
 ## -RangeToId / -ResultId parameters let a run pin the exact AutomationId
 ## without editing this script.
+##
+## 2026-10-19 real-machine calibration (E phase 2): the localised property panel
+## does not match the English scan patterns; measured ids are now tried FIRST
+## in the default path (see section 4) and can still be overridden:
+##   spacing      = StepSize_Ugr
+##   angle begin  = AngleRangeBegin_Ugr
+##   angle end    = AngleRangeEnd_Ugr
+##   UGR toggle   = aid 'Ugr'
+## -CalcButtonId (new) pins the start button the same way.
 param(
     [string]$PointX = '',
     [string]$PointY = '',
@@ -41,7 +50,8 @@ param(
     [string]$StepId = '',
     [string]$RangeFromId = '',
     [string]$RangeToId = '',
-    [string]$ResultId = ''
+    [string]$ResultId = '',
+    [string]$CalcButtonId = ''
 )
 $ErrorActionPreference = 'Continue'
 Add-Type -AssemblyName UIAutomationClient
@@ -243,15 +253,36 @@ Start-Sleep -Milliseconds 800
 Emit 'ugr-metric' 'ok'
 
 # ------------------------------------------------------- 4) step + range
+# Default path = measured ids first (2026-10-19: the Chinese UI never matches
+# the English patterns below, so pattern-only search cost us two real runs),
+# then the historical name scan as a second chance.
 $stepEl = $null
 if ($StepId -ne '') { $stepEl = ById $StepId 4000 }
-else { $stepEl = Find-Pattern 'StepSize|StepDeg|UgrStep|SpacingStep' 3000 }
+else {
+    foreach ($cand in @('StepSize_Ugr', 'StepSize', 'StepDeg', 'UgrStep', 'SpacingStep')) {
+        $stepEl = ById $cand 600
+        if ($stepEl -ne $null) { break }
+    }
+    if ($stepEl -eq $null) { $stepEl = Find-Pattern 'StepSize|StepDeg|UgrStep|SpacingStep' 3000 }
+}
 $fromEl = $null
 if ($RangeFromId -ne '') { $fromEl = ById $RangeFromId 4000 }
-else { $fromEl = Find-Pattern 'ViewingAngleFrom|ViewRangeFrom|AngleFrom' 3000 }
+else {
+    foreach ($cand in @('AngleRangeBegin_Ugr', 'ViewingAngleFrom', 'ViewRangeFrom', 'AngleFrom')) {
+        $fromEl = ById $cand 600
+        if ($fromEl -ne $null) { break }
+    }
+    if ($fromEl -eq $null) { $fromEl = Find-Pattern 'ViewingAngleFrom|ViewRangeFrom|AngleFrom' 3000 }
+}
 $toEl = $null
 if ($RangeToId -ne '') { $toEl = ById $RangeToId 4000 }
-else { $toEl = Find-Pattern 'ViewingAngleTo|ViewRangeTo|AngleTo' 3000 }
+else {
+    foreach ($cand in @('AngleRangeEnd_Ugr', 'ViewingAngleTo', 'ViewRangeTo', 'AngleTo')) {
+        $toEl = ById $cand 600
+        if ($toEl -ne $null) { break }
+    }
+    if ($toEl -eq $null) { $toEl = Find-Pattern 'ViewingAngleTo|ViewRangeTo|AngleTo' 3000 }
+}
 
 if ($stepEl -eq $null -or $fromEl -eq $null -or $toEl -eq $null) {
     # Do not silently run with DIALux defaults when the caller asked for a
@@ -269,33 +300,82 @@ try {
 Emit 'ugr-params' 'ok' ("step={0} from={1} to={2}" -f $StepDeg, $RangeFromDeg, $RangeToDeg)
 
 # ------------------------------------------------------- 5) calculation
-$calc = ById 'CalculationButtonStart' 5000
-if ($calc -eq $null) { Fail 'ugr-calc' 'calculation-button-missing' }
+# Best-effort read of the result panel text; used as the completion FALLBACK
+# signal and for diagnostics. Two timeouts: long for snapshots, short when
+# polled inside the wait loop.
+function Read-UgrResultText([string]$resultId, [int]$ms) {
+    if ($resultId -ne '') {
+        $el = ById $resultId $ms
+        if ($el -ne $null) { try { return $el.Current.Name } catch { } }
+        return ''
+    }
+    $chunks = @()
+    foreach ($cand in @('ResultsMonitorList', 'ResultsMonitorSurfaceResultAverage', 'ResultsMonitorSurfaceUniformityAverage')) {
+        $el = ById $cand $ms
+        if ($el -eq $null) { continue }
+        try {
+            $items = $el.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+                                 [System.Windows.Automation.Condition]::TrueCondition)
+            for ($i = 0; $i -lt $items.Count; $i++) {
+                $nm = ''
+                try { $nm = $items.Item($i).Current.Name } catch { }
+                if ($nm -ne '') { $chunks += $nm }
+            }
+        } catch { }
+    }
+    return ($chunks -join ' | ')
+}
+
+$calc = $null
+if ($CalcButtonId -ne '') { $calc = ById $CalcButtonId 5000 }
+if ($calc -eq $null) { $calc = ById 'CalculationButtonStart' 5000 }
+if ($calc -eq $null) { Fail 'ugr-calc' 'calculation-button-missing-use-CalcButtonId' }
 $before = ''
 try { $before = $calc.Current.Name } catch { }
+# Result panel BEFORE we click: baseline for the fallback comparison.
+$resBefore = Read-UgrResultText $ResultId 800
 try {
     $calc.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
 } catch {
     Fail 'ugr-calc' 'calculation-invoke-failed'
 }
-# Completion signal = CalculationCommandText reverts to its pre-click label.
-# This is the same CALCULATING -> IDLE edge that calc_watch_trigger / UiState
-# uses; polling the button label is the in-process equivalent.
+# Completion: PRIMARY = CalculationCommandText reverts to its pre-click label
+# (the CALCULATING -> IDLE edge calc_watch_trigger / UiState uses).
+# FALLBACK (added 2026-10-19, real machine): on evo 14.0 the label NEVER
+# flipped although the calculation had finished in ~45-60 s, so a label-only
+# wait burned the whole 300 s budget and failed with 'calculation-timeout'.
+# The result panel text changing (empty -> value counts) is observable in the
+# same runs, so poll BOTH and only declare done when at least one fired;
+# a 10 s floor keeps a late panel render from firing instantly.
 $sw = [Diagnostics.Stopwatch]::StartNew()
 $busySeen = $false
 $done = $false
+$via = ''
+$resNow = ''
 while ($sw.ElapsedMilliseconds -lt $CalcTimeoutMs) {
+    # (A) label edge -- never skip the rest when the label element is absent
+    #     (the old code 'continue'd here and could never see any other signal).
     $cur = ById 'CalculationCommandText' 1500
-    if ($cur -eq $null) { Start-Sleep -Milliseconds 500; continue }
-    $name = ''
-    try { $name = $cur.Current.Name } catch { }
-    if ($name -ne $before) { $busySeen = $true }
-    elseif ($busySeen) { $done = $true; break }
+    if ($cur -ne $null) {
+        $name = ''
+        try { $name = $cur.Current.Name } catch { }
+        if ($name -ne $before) { $busySeen = $true }
+        elseif ($busySeen) { $done = $true; $via = 'label'; break }
+    }
+    # (B) result panel changed
+    $resNow = Read-UgrResultText $ResultId 120
+    if ($resNow -ne '' -and $resNow -ne $resBefore -and $sw.Elapsed.TotalSeconds -ge 10) {
+        $done = $true; $via = 'result'; break
+    }
     Start-Sleep -Milliseconds 1000
 }
-if (-not $done) { Fail 'ugr-calc' 'calculation-timeout' }
+if (-not $done) {
+    $b = ($resBefore -replace '\s+', ' '); if ($b.Length -gt 120) { $b = $b.Substring(0, 120) }
+    $a = ($resNow -replace '\s+', ' '); if ($a.Length -gt 120) { $a = $a.Substring(0, 120) }
+    Fail 'ugr-calc' ("calculation-timeout via=none res_before='{0}' res_after='{1}'" -f $b, $a)
+}
 Start-Sleep -Milliseconds 1500
-Emit 'ugr-calc' 'ok' ("sec={0}" -f [int]($sw.Elapsed.TotalSeconds))
+Emit 'ugr-calc' 'ok' ("sec={0} via={1}" -f [int]($sw.Elapsed.TotalSeconds), $via)
 
 # ------------------------------------------------------- 6) read result
 $chunks = @()

@@ -49,6 +49,23 @@ function Emit([string]$name, [string]$status, [string]$detail = '') {
 }
 
 function Fail([string]$name, [string]$detail) {
+    # Failure paths used to leave the modal file dialog on screen (measured
+    # 2026-10-19 E2: both failed runs kept it open), and a visible modal
+    # collapses the main window's UIA tree (310 -> 3), so the NEXT attempt
+    # starts blind. Best effort only: dismiss our own process' dialog, never
+    # fatal, never assumed present (early failures happen before Find-FileDialog
+    # exists -- hence the try/catch).
+    try {
+        if ($script:proc -ne $null) {
+            $hAny = Find-FileDialog $script:proc.Id 400
+            if ($hAny -ne [IntPtr]::Zero) {
+                $hc = [Win.U]::GetDlgItem($hAny, 2)
+                if ($hc -ne [IntPtr]::Zero) {
+                    [void][Win.U]::SendMessage($hc, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)
+                }
+            }
+        }
+    } catch { }
     Emit $name 'fail' $detail
     exit 1
 }
@@ -130,6 +147,24 @@ for ($try = 0; $try -lt 3 -and -not $fgOk; $try++) {
 }
 if ($fgOk) { Emit 'activate' 'ok' }
 else { Fail 'activate' 'could-not-bring-dialux-to-foreground' }
+
+# Baselines for the settled check, taken BEFORE the file dialog exists (while a
+# modal is up the main window tree collapses to a handful of children, so a
+# snapshot taken later is meaningless).
+# $titleBefore kills the false pass where the already-open project's title
+# already contains the STF stem (measured 2026-10-19: Contains() was true on
+# its FIRST tick and the run went green over a scene that never re-imported).
+# $treeBefore is the scene-rebuild probe: KANBAN measured the main window at
+# 157 descendants on the start page vs 271 once a project is loaded, so a load
+# that really lands moves this counter.
+$titleBefore = ''
+try { $titleBefore = [string]$main.GetCurrentPropertyValue(
+    [System.Windows.Automation.AutomationElement]::NameProperty) } catch { }
+$treeBefore = 0
+try {
+    $treeBefore = $main.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+                                [System.Windows.Automation.Condition]::TrueCondition).Count
+} catch { }
 
 # ---------------------------------------------------------------- menu
 
@@ -229,9 +264,27 @@ if ($hEdit -eq [IntPtr]::Zero) {
     }
 }
 
-[void][Win.U]::SetWindowText($hCombo, $full)
-if ($hEdit -ne [IntPtr]::Zero) { [void][Win.U]::SetWindowText($hEdit, $full) }
-Start-Sleep -Milliseconds 250
+# Fill the field with CLIPBOARD + WM_PASTE; SetWindowText is only the fallback.
+# Measured 2026-10-19 (E phase 2, cold start):
+#   SetWindowText  -> text reads back, the field never RENDERS, BM_CLICK inert;
+#   typed input    -> rewritten by the local IME (ASCII path comes back as
+#                     full-width punctuation; TaskDialog reports the mangled path);
+#   clipboard paste -> renders and works (1 s to disk on the save dialog).
+# WM_PASTE is a control message, so no focus / foreground / IME dance; the
+# clipboard is restored right after the paste returns.
+$via = 'settext'
+$oldClip = $null
+$clipOk = $false
+try { $oldClip = Get-Clipboard -Raw; $clipOk = $true } catch { }
+try {
+    Set-Clipboard -Value $full
+    [void][Win.U]::SendMessage($hCombo, 0x0302, [IntPtr]::Zero, [IntPtr]::Zero)   # WM_PASTE
+    if ($hEdit -ne [IntPtr]::Zero) {
+        [void][Win.U]::SendMessage($hEdit, 0x0302, [IntPtr]::Zero, [IntPtr]::Zero)
+    }
+    Start-Sleep -Milliseconds 250
+} catch { }
+if ($clipOk) { try { Set-Clipboard -Value $oldClip } catch { } }   # restore the user's clipboard
 
 # Read it back. A silently-empty filename field means Open would just reopen the
 # folder listing and the whole run would hang waiting for a title change.
@@ -242,27 +295,51 @@ foreach ($h in @($hCombo, $hEdit)) {
     [void][Win.U]::GetWindowTextStr($h, $sb, 1024)
     if ($sb.ToString().Trim().Length -gt 0) { $got = $sb.ToString(); break }
 }
-if ($got.Length -eq 0) { Fail 'dialog-filename' 'settext-had-no-effect' }
-Emit 'dialog-filename' 'ok'
+if ($got.Length -eq 0) {
+    # Fallback: the historical double-layer SetWindowText (still right on some
+    # builds, and readback is the only gate we have -- the real proof that the
+    # path landed is the settled check below).
+    [void][Win.U]::SetWindowText($hCombo, $full)
+    if ($hEdit -ne [IntPtr]::Zero) { [void][Win.U]::SetWindowText($hEdit, $full) }
+    Start-Sleep -Milliseconds 250
+    foreach ($h in @($hCombo, $hEdit)) {
+        if ($h -eq [IntPtr]::Zero) { continue }
+        $sb2 = New-Object System.Text.StringBuilder 1024
+        [void][Win.U]::GetWindowTextStr($h, $sb2, 1024)
+        if ($sb2.ToString().Trim().Length -gt 0) { $got = $sb2.ToString(); break }
+    }
+    if ($got.Length -gt 0) { $via = 'settext-fallback' }
+}
+if ($got.Length -eq 0) { Fail 'dialog-filename' 'filename-fill-had-no-effect' }
+Emit 'dialog-filename' 'ok' ("via=" + $via)
 
 $BM_CLICK = 0x00F5
 [void][Win.U]::SendMessage($hOpen, $BM_CLICK, [IntPtr]::Zero, [IntPtr]::Zero)
 Emit 'import' 'ok'
 
-# Import is silent: no dialog, no status text. The only observable signal is the
-# window title changing to <name>.evo, so poll for that instead of sleeping.
+# Import is silent: no dialog, no status text. Two signals, in two phases:
+#   phase 1 -- the window title gains the STF stem AND differs from the
+#              pre-import title (the classic signal, kept as the fast path);
+#   phase 2 -- measured 2026-10-19 E2: with an already-open project whose title
+#              already contains $stem, the old Contains() check passed on its
+#              first tick and reported success over an untouched scene (the
+#              project file then grew by only 16 bytes = timestamp). Phase 2
+#              runs only when phase 1 missed, AFTER the dialog is dismissed,
+#              and requires the title to move OR the main window's descendant
+#              count to move (scene rebuild, KANBAN 157 -> 271 evidence).
 $stem = [IO.Path]::GetFileNameWithoutExtension($full)
 $sw = [Diagnostics.Stopwatch]::StartNew()
 $titled = $false
-while ($sw.ElapsedMilliseconds -lt $TimeoutMs) {
+$settledVia = 'title'
+$phase1Ms = [int]($TimeoutMs * 0.4)
+while ($sw.ElapsedMilliseconds -lt $phase1Ms) {
     Start-Sleep -Milliseconds 300
     try {
         $t = $main.GetCurrentPropertyValue(
             [System.Windows.Automation.AutomationElement]::NameProperty)
-        if ($t -is [string] -and $t.Contains($stem)) { $titled = $true; break }
+        if ($t -is [string] -and $t.Contains($stem) -and $t -ne $titleBefore) { $titled = $true; break }
     } catch { }
 }
-if (-not $titled) { Fail 'import-settled' 'title-unchanged' }
 
 # Clean up after ourselves. Measured 2026-09-06: BM_CLICK on the Open button does
 # perform the import (title changes, scene rebuilds) but the dialog window is NEVER
@@ -286,7 +363,29 @@ if ([Win.U]::IsWindowVisible($hDlg)) {
     }
     if ([Win.U]::IsWindowVisible($hDlg)) { Fail 'import-settled' 'dialog-still-on-screen' }
 }
-Emit 'import-settled' 'ok'
+
+if (-not $titled) {
+    # Phase 2: dialog already dismissed above, so the main window tree is whole
+    # again. Require an observable change before we claim the scene was rebuilt.
+    $treeNow = 0
+    while ($sw.ElapsedMilliseconds -lt $TimeoutMs) {
+        Start-Sleep -Milliseconds 400
+        $t2 = ''
+        try { $t2 = [string]$main.GetCurrentPropertyValue(
+            [System.Windows.Automation.AutomationElement]::NameProperty) } catch { }
+        try {
+            $treeNow = $main.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+                                     [System.Windows.Automation.Condition]::TrueCondition).Count
+        } catch { }
+        if ($t2.Contains($stem) -and $t2 -ne $titleBefore) { $titled = $true; $settledVia = 'title'; break }
+        if ($treeNow -ne $treeBefore) { $titled = $true; $settledVia = 'tree'; break }
+    }
+    if (-not $titled) {
+        Fail 'import-settled' ("title-unchanged-and-tree-unchanged pre-title='{0}' pre-tree={1} post-tree={2}" -f
+            ($titleBefore -replace '\s+', ' '), $treeBefore, $treeNow)
+    }
+}
+Emit 'import-settled' 'ok' ("via=" + $settledVia)
 
 # ---------------------------------------------------------------- save
 

@@ -80,8 +80,11 @@ def export_report(
 
     参数:
         pdf_path: 目标 PDF 路径（绝对路径；中间目录会自动创建）。
-        id_overrides: 逃生舱——``print_menu_id`` / ``printer_combo_id``
-            / ``save_button_id`` / ``file_name_id``，用于钉死控件 AutomationId。
+        id_overrides: 逃生舱——``report_menu_id`` / ``report_tab_index`` /
+            ``print_menu_id`` / ``printer_combo_id`` / ``save_button_id`` /
+            ``file_name_id``，用于钉死控件（键名一律 **snake_case**，与
+            ``real_action.py`` 把 ``ids`` 摊成 kwargs 的口径一致；
+            2026-10-19 开跑信曾误写成“同 ps1 参数”的 PascalCase，勘误已发）。
         cancel_check: 每读一行调用，返回 True 时中止。
 
     返回: StepEvent 列表；``succeeded(events)``（末步 report-done）判断跑完。
@@ -100,6 +103,8 @@ def export_report(
         "-WaitTimeoutMs", str(int(wait_timeout_s * 1000)),
     ]
     for key, flag in (
+        ("report_menu_id", "-ReportMenuId"),
+        ("report_tab_index", "-ReportTabIndex"),
         ("print_menu_id", "-PrintMenuId"),
         ("printer_combo_id", "-PrinterComboId"),
         ("save_button_id", "-SaveButtonId"),

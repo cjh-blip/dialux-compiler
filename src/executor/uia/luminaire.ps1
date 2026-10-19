@@ -20,7 +20,9 @@ param(
     [string]$ProcessName = 'DIALux_x64',
     [int]$CountX = 0,
     [int]$CountY = 0,
-    [int]$TimeoutMs = 12000
+    # Was 12000: too narrow for the list-select fallback when the dialog has to
+    # repaint in the shared recent folder (E2 measured two early misses).
+    [int]$TimeoutMs = 30000
 )
 $ErrorActionPreference = 'Continue'
 Add-Type -AssemblyName UIAutomationClient
@@ -149,9 +151,50 @@ Start-Sleep -Milliseconds 400
 $il = ById 'ImportLuminaire' 4000
 if ($il -eq $null) { Emit 'lum-import' 'fail' 'import-luminaire-missing'; exit 1 }
 $il.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
-$hDlg = Find-FileDialog $proc.Id 10000
+$hDlg = Find-FileDialog $proc.Id 15000
 if ($hDlg -eq [IntPtr]::Zero) { Emit 'lum-import' 'fail' 'file-dialog-not-found'; exit 1 }
 Start-Sleep -Milliseconds 3000
+
+# --- navigate: paste the absolute path first (folder independent) ----------
+# 2026-10-19 E2 measured: the dialog opens in DIALux's SHARED recent folder,
+# which the previous action has just rewritten, so the file-name list lookup
+# below misses a perfectly valid $IesPath -> 'target-not-in-dialog' (2 of 2).
+# Only clipboard + WM_PASTE works on this dialog family: SetWindowText reads
+# back but never renders (measured), and typed input is rewritten by the local
+# IME (an ASCII path comes back as full-width punctuation -- measured). WM_PASTE
+# needs no focus, so there is no foreground/IME dance here.
+$pasted = $false
+$hCombo = [LU.U]::GetDlgItem($hDlg, 1148)
+if ($hCombo -ne [IntPtr]::Zero) {
+  $hEdit = [LU.U]::FindWindowEx($hCombo, [IntPtr]::Zero, 'Edit', [NullString]::Value)
+  if ($hEdit -eq [IntPtr]::Zero) {
+    $hInner = [LU.U]::FindWindowEx($hCombo, [IntPtr]::Zero, 'ComboBox', [NullString]::Value)
+    if ($hInner -ne [IntPtr]::Zero) {
+      $hEdit = [LU.U]::FindWindowEx($hInner, [IntPtr]::Zero, 'Edit', [NullString]::Value)
+    }
+  }
+  if ($hEdit -ne [IntPtr]::Zero) {
+    $oldClip = $null
+    $clipOk = $false
+    try { $oldClip = Get-Clipboard -Raw; $clipOk = $true } catch { }
+    try {
+      Set-Clipboard -Value $full
+      [void][LU.U]::SendMessage($hCombo, 0x0302, [IntPtr]::Zero, [IntPtr]::Zero)   # WM_PASTE
+      [void][LU.U]::SendMessage($hEdit, 0x0302, [IntPtr]::Zero, [IntPtr]::Zero)
+      Start-Sleep -Milliseconds 250
+      $sb = New-Object System.Text.StringBuilder 1024
+      [void][LU.U]::GetWindowText($hEdit, $sb, 1024)
+      if ($sb.ToString().Trim().Length -gt 0) { $pasted = $true }
+    } catch { }
+    if ($clipOk) { try { Set-Clipboard -Value $oldClip } catch { } }   # restore the user's clipboard
+  }
+}
+
+if ($pasted) {
+  $hOpen = [LU.U]::GetDlgItem($hDlg, 1)
+  if ($hOpen -eq [IntPtr]::Zero) { Cancel-FileDialogs; Emit 'lum-import' 'fail' 'open-button-not-found'; exit 1 }
+  [void][LU.U]::SendMessage($hOpen, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)        # BM_CLICK = Open
+} else {
 $dlg = [System.Windows.Automation.AutomationElement]::FromHandle($hDlg)
 $nc = New-Object System.Windows.Automation.PropertyCondition(
     [System.Windows.Automation.AutomationElement]::NameProperty, $target)
@@ -165,7 +208,13 @@ if ($it -eq $null) { Cancel-FileDialogs; Emit 'lum-import' 'fail' 'target-not-in
 $it.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
 Start-Sleep -Milliseconds 400
 $it.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+}
 Start-Sleep -Milliseconds 5000
+# Dismiss a dialog BM_CLICK left behind (measured in dialux_driver.ps1: BM_CLICK
+# performs the load but never destroys the window). No-op when the list-select
+# path closed it itself; a lingering modal collapses the main window's UIA tree
+# and breaks every later step.
+if ([LU.U]::IsWindowVisible($hDlg)) { Cancel-FileDialogs }
 # paywall check
 $paywall = $false
 foreach ($h in [LU.U]::Tops()) {
