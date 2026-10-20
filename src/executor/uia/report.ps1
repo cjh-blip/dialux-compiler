@@ -193,10 +193,21 @@ if ($mode -eq $null) {
         $all = $tabs.FindAll([System.Windows.Automation.TreeScope]::Descendants, $tc)
         $items = @()
         for ($i = 0; $i -lt $all.Count; $i++) { $items += $all.Item($i) }
-        foreach ($ti in $items) {
-            $nm = ''
-            try { $nm = [string]$ti.Current.Name } catch { }
-            if ($nm -match 'Report|report') { $mode = $ti; $modeVia = 'tab-name'; break }
+        # 2026-10-20 real machine: 20 TabItems and NONE of them contains
+        # 'Report' -- the report mode tab is
+        # 'Dial.Dialux.InteractionModes.Results.ResultMode' (Result != Report),
+        # and its 0-based index (19, measured under the calculation mode) shifts
+        # with the tool tabs in [0..15]. Two passes: the old Report pattern
+        # first, then the MODE namespace carrying Result -- tool tabs share this
+        # control, so a bare 'Result' anywhere must not win over the mode tab.
+        $namePats = @('Report|report', 'InteractionModes.*Result')
+        $nameVia = @('tab-name', 'tab-name-resultmode')
+        for ($pi = 0; $pi -lt $namePats.Count -and $mode -eq $null; $pi++) {
+            foreach ($ti in $items) {
+                $nm = ''
+                try { $nm = [string]$ti.Current.Name } catch { }
+                if ($nm -match $namePats[$pi]) { $mode = $ti; $modeVia = $nameVia[$pi]; break }
+            }
         }
         if ($mode -eq $null -and $ReportTabIndex -ge 0 -and $ReportTabIndex -lt $items.Count) {
             $mode = $items[$ReportTabIndex]

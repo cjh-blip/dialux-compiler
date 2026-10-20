@@ -131,6 +131,42 @@ function Find-FileDialog([int]$ownerPid, [int]$ms = 10000) {
   return [IntPtr]::Zero
 }
 
+# ---- readback helpers for the filename field (added 2026-10-20, review round)
+# A read only counts when the returned text CARRIES $full: a stale non-empty
+# read must not be mistaken for a landing, and a path found twice is the
+# double-paste symptom (the caller then refuses the paste route).
+function Count-LumPath([string]$t, [string]$p) {
+  if ([string]::IsNullOrEmpty($t)) { return 0 }
+  $n = 0
+  $i = 0
+  while ($true) {
+    $i = $t.IndexOf($p, $i, [System.StringComparison]::OrdinalIgnoreCase)
+    if ($i -lt 0) { break }
+    $n++
+    $i += $p.Length
+  }
+  return $n
+}
+
+# Second gate: the dialog's UIA Name tree. Win32 GetWindowText on an edit that
+# lives in ANOTHER process can come back empty while the text renders
+# (measured in dialux_driver.ps1, 2026-10-20); this dialog's Name tree does
+# show the field text. Returns '' when nothing carries the needle.
+function Read-LumFieldUiA($hDlg, [string]$needle) {
+  try {
+    $dlg = [System.Windows.Automation.AutomationElement]::FromHandle($hDlg)
+    $all = $dlg.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+                         [System.Windows.Automation.Condition]::TrueCondition)
+    for ($i = 0; $i -lt $all.Count; $i++) {
+      $nm = ''
+      try { $nm = [string]$all.Item($i).Current.Name } catch { }
+      if ($nm.Length -gt 0 -and
+          $nm.IndexOf($needle, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { return $nm }
+    }
+  } catch { }
+  return ''
+}
+
 if (-not (Test-Path -LiteralPath $IesPath)) { Emit 'lum-import' 'fail' 'ies-missing'; exit 1 }
 $target = Split-Path -Leaf $IesPath
 
@@ -163,6 +199,10 @@ Start-Sleep -Milliseconds 3000
 # back but never renders (measured), and typed input is rewritten by the local
 # IME (an ASCII path comes back as full-width punctuation -- measured). WM_PASTE
 # needs no focus, so there is no foreground/IME dance here.
+#
+# 2026-10-20 review round, same defect as dialux_driver.ps1: WM_PASTE was sent
+# to BOTH the ComboBoxEx and its inner Edit -> the SAME path written twice ->
+# 'file name invalid'. ONE target only, and a readback that must carry $full.
 $pasted = $false
 $hCombo = [LU.U]::GetDlgItem($hDlg, 1148)
 if ($hCombo -ne [IntPtr]::Zero) {
@@ -179,14 +219,31 @@ if ($hCombo -ne [IntPtr]::Zero) {
     try { $oldClip = Get-Clipboard -Raw; $clipOk = $true } catch { }
     try {
       Set-Clipboard -Value $full
-      [void][LU.U]::SendMessage($hCombo, 0x0302, [IntPtr]::Zero, [IntPtr]::Zero)   # WM_PASTE
-      [void][LU.U]::SendMessage($hEdit, 0x0302, [IntPtr]::Zero, [IntPtr]::Zero)
+      [void][LU.U]::SendMessage($hEdit, 0x0302, [IntPtr]::Zero, [IntPtr]::Zero)   # WM_PASTE, single target
       Start-Sleep -Milliseconds 250
-      $sb = New-Object System.Text.StringBuilder 1024
-      [void][LU.U]::GetWindowText($hEdit, $sb, 1024)
-      if ($sb.ToString().Trim().Length -gt 0) { $pasted = $true }
     } catch { }
     if ($clipOk) { try { Set-Clipboard -Value $oldClip } catch { } }   # restore the user's clipboard
+    # Readback: poll and only accept a value that CARRIES $full. The old single
+    # read judged empty on every 2026-10-20 run and dropped us into the list
+    # fallback even when the paste had landed; a stale non-empty read must not
+    # count either. Gate 2 = the dialog's UIA Name tree (the Win32 read of an
+    # edit in ANOTHER process can legitimately come back empty).
+    $gotLum = ''
+    for ($gi = 0; $gi -lt 6 -and $gotLum.Length -eq 0; $gi++) {
+      if ($gi -gt 0) { Start-Sleep -Milliseconds 250 }
+      $sb = New-Object System.Text.StringBuilder 1024
+      [void][LU.U]::GetWindowText($hEdit, $sb, 1024)
+      $t = $sb.ToString()
+      if ($t.IndexOf($full, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { $gotLum = $t }
+    }
+    if ($gotLum.Length -eq 0) {
+      $uiaLum = Read-LumFieldUiA $hDlg $full
+      if ($uiaLum.IndexOf($full, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { $gotLum = $uiaLum }
+    }
+    # Exactly once: a doubled path is the double-paste symptom -- do NOT click
+    # Open on it (the modal it raises blocks the next step). Falling through to
+    # the list-select path below rewrites the field with the item's own path.
+    if ($gotLum -ne '' -and (Count-LumPath $gotLum $full) -eq 1) { $pasted = $true }
   }
 }
 
