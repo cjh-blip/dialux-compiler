@@ -42,6 +42,7 @@ Add-Type -Namespace Win -Name U -MemberDefinition @'
 [DllImport("user32.dll", CharSet=CharSet.Auto)] public static extern bool SetWindowText(IntPtr h, string s);
 [DllImport("user32.dll", EntryPoint="SendMessage")] public static extern IntPtr SendMessage(IntPtr h, int msg, IntPtr w, IntPtr l);
 [DllImport("user32.dll", CharSet=CharSet.Auto, EntryPoint="GetWindowText")] public static extern int GetWindowTextStr(IntPtr h, System.Text.StringBuilder s, int n);
+[DllImport("user32.dll", CharSet=CharSet.Auto, EntryPoint="SendMessageTimeout")] public static extern IntPtr SendMessageTimeout(IntPtr h, int msg, IntPtr w, IntPtr l, uint flags, uint timeout, out IntPtr result);
 '@
 
 function Emit([string]$name, [string]$status, [string]$detail = '') {
@@ -94,6 +95,76 @@ function Invoke-El($el) {
 function Expand-El($el) {
     $p = $el.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
     $p.Expand()
+}
+
+# ---- readback helpers for the filename field (added 2026-10-20, review round)
+#
+# Gate rule for every fill in this file: a read only counts when the text it
+# returns actually CARRIES the path we wrote. A bare non-empty read (stale
+# text, or a control that mirrors nothing) must never be mistaken for landing,
+# and a path that shows up TWICE is the double-paste symptom and must fail
+# before any click (2026-10-20: the doubled path raised 'file name invalid'
+# and the unbounded BM_CLICK then blocked for 300/240/240 s).
+function Field-Has([string]$t, [string]$p) {
+    if ([string]::IsNullOrEmpty($t)) { return $false }
+    return ($t.IndexOf($p, [System.StringComparison]::OrdinalIgnoreCase) -ge 0)
+}
+
+function Field-Count([string]$t, [string]$p) {
+    if ([string]::IsNullOrEmpty($t)) { return 0 }
+    $n = 0
+    $i = 0
+    while ($true) {
+        $i = $t.IndexOf($p, $i, [System.StringComparison]::OrdinalIgnoreCase)
+        if ($i -lt 0) { break }
+        $n++
+        $i += $p.Length
+    }
+    return $n
+}
+
+# Second gate: read the field through UIA. The Win32 read of an edit control
+# that lives in ANOTHER process can come back empty while the text renders
+# (measured 2026-10-20: every run fell through to the SetWindowText fallback),
+# and this dialog's UIA Name tree does show the field text (the review
+# receipt's dump read the doubled path from here). Returns '' when nothing
+# carries the needle -- the caller still runs Field-Has on the result.
+function Read-FieldUiA($hDlg, [string]$needle) {
+    try {
+        $dlg = [System.Windows.Automation.AutomationElement]::FromHandle($hDlg)
+        $all = $dlg.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+                             [System.Windows.Automation.Condition]::TrueCondition)
+        for ($i = 0; $i -lt $all.Count; $i++) {
+            $nm = ''
+            try { $nm = [string]$all.Item($i).Current.Name } catch { }
+            if ($nm.Length -gt 0 -and
+                $nm.IndexOf($needle, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { return $nm }
+        }
+    } catch { }
+    return ''
+}
+
+# A visible #32770 in DIALux that is NOT our file dialog: it has an OK button
+# (id 1) but no filename box (id 1148) -- that is the 'file name invalid'
+# TaskDialog raised by the Open handler. Only called after a bounded click.
+function Find-ErrorModal([int]$ownerPid, [int]$timeout) {
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    while ($sw.ElapsedMilliseconds -lt $timeout) {
+        $h = [IntPtr]::Zero
+        while ($true) {
+            $h = [Win.U]::FindWindowEx([IntPtr]::Zero, $h, '#32770', [NullString]::Value)
+            if ($h -eq [IntPtr]::Zero) { break }
+            $wpid = 0
+            [void][Win.U]::GetWindowThreadProcessId($h, [ref]$wpid)
+            if ($wpid -ne $ownerPid) { continue }
+            if (-not [Win.U]::IsWindowVisible($h)) { continue }
+            if ([Win.U]::GetDlgItem($h, 1) -eq [IntPtr]::Zero) { continue }
+            if ([Win.U]::GetDlgItem($h, 1148) -ne [IntPtr]::Zero) { continue }
+            return $h
+        }
+        Start-Sleep -Milliseconds 150
+    }
+    return [IntPtr]::Zero
 }
 
 # ---------------------------------------------------------------- attach
@@ -272,33 +343,52 @@ if ($hEdit -eq [IntPtr]::Zero) {
 #   clipboard paste -> renders and works (1 s to disk on the save dialog).
 # WM_PASTE is a control message, so no focus / foreground / IME dance; the
 # clipboard is restored right after the paste returns.
-$via = 'settext'
+#
+# Measured 2026-10-20 (review round): WM_PASTE sent to BOTH the ComboBoxEx and
+# its inner Edit wrote the SAME path twice into the same edit box
+# (D:\...\room.stfD:\...\room.stf) -> DIALux raised 'file name invalid' ->
+# the click below blocked until the run was killed. Paste exactly ONE target:
+# the inner Edit owns the text, the combo only forwards to it.
+$via = 'clipboard'
 $oldClip = $null
 $clipOk = $false
 try { $oldClip = Get-Clipboard -Raw; $clipOk = $true } catch { }
 try {
     Set-Clipboard -Value $full
-    [void][Win.U]::SendMessage($hCombo, 0x0302, [IntPtr]::Zero, [IntPtr]::Zero)   # WM_PASTE
-    if ($hEdit -ne [IntPtr]::Zero) {
-        [void][Win.U]::SendMessage($hEdit, 0x0302, [IntPtr]::Zero, [IntPtr]::Zero)
-    }
+    $pasteTarget = if ($hEdit -ne [IntPtr]::Zero) { $hEdit } else { $hCombo }
+    [void][Win.U]::SendMessage($pasteTarget, 0x0302, [IntPtr]::Zero, [IntPtr]::Zero)   # WM_PASTE, single target
     Start-Sleep -Milliseconds 250
 } catch { }
 if ($clipOk) { try { Set-Clipboard -Value $oldClip } catch { } }   # restore the user's clipboard
 
-# Read it back. A silently-empty filename field means Open would just reopen the
-# folder listing and the whole run would hang waiting for a title change.
+# Read it back -- two polled gates, both demanding the real path. The old code
+# did ONE read 250 ms after the paste; it came back empty every run on
+# 2026-10-20, so the fallback always fired (via=settext-fallback in the
+# receipt) even though the paste had already landed.
 $got = ''
-foreach ($h in @($hCombo, $hEdit)) {
-    if ($h -eq [IntPtr]::Zero) { continue }
-    $sb = New-Object System.Text.StringBuilder 1024
-    [void][Win.U]::GetWindowTextStr($h, $sb, 1024)
-    if ($sb.ToString().Trim().Length -gt 0) { $got = $sb.ToString(); break }
+for ($gi = 0; $gi -lt 6 -and $got.Length -eq 0; $gi++) {
+    if ($gi -gt 0) { Start-Sleep -Milliseconds 250 }
+    foreach ($h in @($hCombo, $hEdit)) {
+        if ($h -eq [IntPtr]::Zero) { continue }
+        $sb = New-Object System.Text.StringBuilder 1024
+        [void][Win.U]::GetWindowTextStr($h, $sb, 1024)
+        $t = $sb.ToString()
+        if (Field-Has $t $full) { $got = $t; break }
+    }
+}
+if ($got.Length -eq 0) {
+    $uia = Read-FieldUiA $hDlg $full
+    if (Field-Has $uia $full) { $got = $uia }
+}
+if ($got.Length -gt 0 -and (Field-Count $got $full) -gt 1) {
+    # Doubled path: refuse to press Open on it. This is the 2026-10-20 symptom
+    # caught BEFORE the click -- failing here costs seconds, not a whole run.
+    Fail 'dialog-filename' ("filename-duplicated len=" + $got.Length)
 }
 if ($got.Length -eq 0) {
     # Fallback: the historical double-layer SetWindowText (still right on some
-    # builds, and readback is the only gate we have -- the real proof that the
-    # path landed is the settled check below).
+    # builds). Both gates already saw nothing, so one more write cannot
+    # duplicate what no gate could find.
     [void][Win.U]::SetWindowText($hCombo, $full)
     if ($hEdit -ne [IntPtr]::Zero) { [void][Win.U]::SetWindowText($hEdit, $full) }
     Start-Sleep -Milliseconds 250
@@ -306,15 +396,39 @@ if ($got.Length -eq 0) {
         if ($h -eq [IntPtr]::Zero) { continue }
         $sb2 = New-Object System.Text.StringBuilder 1024
         [void][Win.U]::GetWindowTextStr($h, $sb2, 1024)
-        if ($sb2.ToString().Trim().Length -gt 0) { $got = $sb2.ToString(); break }
+        $t2 = $sb2.ToString()
+        if (Field-Has $t2 $full) { $got = $t2; break }
+    }
+    if ($got.Length -eq 0) {
+        $uia2 = Read-FieldUiA $hDlg $full
+        if (Field-Has $uia2 $full) { $got = $uia2 }
     }
     if ($got.Length -gt 0) { $via = 'settext-fallback' }
 }
 if ($got.Length -eq 0) { Fail 'dialog-filename' 'filename-fill-had-no-effect' }
 Emit 'dialog-filename' 'ok' ("via=" + $via)
 
+# Press Open -- BOUNDED. 2026-10-20: SendMessage(BM_CLICK) with no time limit
+# blocked forever while the 'file name invalid' modal ran its own message loop
+# inside the button handler; three runs died at 300/240/240 s and emitted no
+# STEP line at all. SendMessageTimeout with SMTO_ABORTIFHUNG (2) caps the wait
+# at 3 s; a zero return means the handler is stuck, so go look for that modal
+# and fail in words (and dismiss it) instead of hanging the action.
 $BM_CLICK = 0x00F5
-[void][Win.U]::SendMessage($hOpen, $BM_CLICK, [IntPtr]::Zero, [IntPtr]::Zero)
+$cbRes = [IntPtr]::Zero
+$sent = [Win.U]::SendMessageTimeout($hOpen, $BM_CLICK, [IntPtr]::Zero, [IntPtr]::Zero, 2, 3000, [ref]$cbRes)
+if ($sent -eq [IntPtr]::Zero) {
+    $modal = Find-ErrorModal $proc.Id 1500
+    if ($modal -ne [IntPtr]::Zero) {
+        $okBtn = [Win.U]::GetDlgItem($modal, 1)
+        if ($okBtn -ne [IntPtr]::Zero) {
+            $cbRes2 = [IntPtr]::Zero
+            [void][Win.U]::SendMessageTimeout($okBtn, $BM_CLICK, [IntPtr]::Zero, [IntPtr]::Zero, 2, 1000, [ref]$cbRes2)
+        }
+        Fail 'import' 'error-modal-after-open (DIALux rejected the filename)'
+    }
+    Fail 'import' 'bm-click-timeout-or-hung'
+}
 Emit 'import' 'ok'
 
 # Import is silent: no dialog, no status text. Two signals, in two phases:

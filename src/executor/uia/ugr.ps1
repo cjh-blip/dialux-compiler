@@ -330,6 +330,18 @@ $calc = $null
 if ($CalcButtonId -ne '') { $calc = ById $CalcButtonId 5000 }
 if ($calc -eq $null) { $calc = ById 'CalculationButtonStart' 5000 }
 if ($calc -eq $null) { Fail 'ugr-calc' 'calculation-button-missing-use-CalcButtonId' }
+# 2026-10-20 review round: on the real machine this button came back
+# enabled=False / name='' and the Invoke threw ('calculation-invoke-failed')
+# on a scene with NO calculation point and the calculation SURFACE selected,
+# while the toolbar play button still LOOKED green (UIA vs pixels disagree --
+# logged as measured). Guard BEFORE Invoke so the failure is words rather than
+# a raw invoke exception. Whether DIALux disables calculation when the scene
+# carries no calculation point is a SCENE/SEQUENCE question (the E checklist
+# has no 'place calculation point' step) -- NOT judged a code defect here;
+# pending the next real-machine round.
+$calcEnabled = $true
+try { $calcEnabled = $calc.Current.IsEnabled } catch { }
+if (-not $calcEnabled) { Fail 'ugr-calc' 'calc-button-disabled scene-may-lack-calculation-point' }
 $before = ''
 try { $before = $calc.Current.Name } catch { }
 # Result panel BEFORE we click: baseline for the fallback comparison.

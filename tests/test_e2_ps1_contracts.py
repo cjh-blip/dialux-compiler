@@ -151,3 +151,63 @@ def test_luminaire_ps1_pastes_absolute_path():
     assert "Cancel-FileDialogs }" in t, "BM_CLICK 开窗后要清残留（与 driver 同病）"
     assert "[int]$TimeoutMs = 30000" in t, "12s 轮询窗太窄（回执原话），已加宽"
     assert "target-not-in-dialog" in t          # 兜底路仍在：粘贴失败退回列表选择
+
+
+# ------------------------------------------------------- 5) 2026-10-20 复核轮回执改点
+# 真机首验 0 过，主病灶＝上一批自己的剪贴板双发；以下把七条改点钉成不回退闸。
+
+def test_driver_ps1_pastes_exactly_one_target():
+    """① WM_PASTE 只发一次：双发→同一编辑区写两遍→path×2→文件名无效。"""
+    t = _src(DRIVER_PS1)
+    assert t.count("0x0302") == 1, (
+        f"driver 的 WM_PASTE 必须只发一个目标，实测 {t.count('0x0302')} 处")
+    assert "$pasteTarget" in t, "目标选择（内层 Edit 优先）必须显式写出来"
+    lum = _src(LUMINAIRE_PS1)
+    assert lum.count("0x0302") == 1, (
+        f"luminaire 的 WM_PASTE 必须只发一个目标，实测 {lum.count('0x0302')} 处")
+
+
+def test_driver_ps1_readback_gate_needs_the_real_path():
+    """①＋③ 读回双闸（轮询 Win32 ＋ UIA Name），且只认带 $full 的值；
+    via=clipboard 必须是代码真会走到的取值（回执抓到过『代码里不存在』）。"""
+    t = _src(DRIVER_PS1)
+    assert "Field-Has" in t, "读回只认带路径的值，非空不算"
+    assert "Read-FieldUiA" in t, "第二闸（UIA Name）缺失＝Win32 读空就误判降级"
+    assert "for ($gi = 0" in t, "单次读回（250ms）就是 2026-10-20 误判降级的成因"
+    assert "$via = 'clipboard'" in t, "via=clipboard 要有真实取值路径支撑"
+    assert "filename-duplicated" in t, "重复路径必须点键前拦下"
+    lum = _src(LUMINAIRE_PS1)
+    assert "Count-LumPath" in lum and "Read-LumFieldUiA" in lum
+
+
+def test_driver_ps1_click_is_bounded_and_modal_checked():
+    """② BM_CLICK 必须有超时（无超时就是 300/240/240s 三轮挂死的成因），
+    超时后扫错误模态框、人话失败并把它收掉。"""
+    t = _src(DRIVER_PS1)
+    assert "SendMessageTimeout" in t, "点击无超时＝遇模态框整动作不返回"
+    assert "out IntPtr" in t, "P/Invoke 声明必须完整（否则 Add-Type 编不过）"
+    assert "bm-click-timeout-or-hung" in t
+    assert "error-modal-after-open" in t, "错误模态框要能被认出来并报成人话"
+    assert "Find-ErrorModal" in t
+    assert "[void][Win.U]::SendMessage($hOpen, $BM_CLICK" not in t, "旧的无超时点键必须已移除"
+
+
+def test_report_ps1_matches_result_mode_tab_name():
+    """④ 报表入口：实测 20 个 TabItem 无一含 Report，模式页签 Name＝
+    `…InteractionModes.Results.ResultMode`（序位 19 随工具页签漂）。
+    两趟匹配：Report 优先、再 InteractionModes.*Result，工具页签不许赢。"""
+    t = _src(REPORT_PS1)
+    assert "'Report|report'" in t, "第一趟（原判据）不许删"
+    assert "'InteractionModes.*Result'" in t, "第二趟（实测 Name）必须在"
+    assert "tab-name-resultmode" in t, "走哪一趟要能从 detail 里看出来"
+
+
+def test_ugr_ps1_checks_enabled_before_invoke():
+    """⑤ 计算按钮先判 IsEnabled 再 Invoke（实测 enabled=False 甩裸
+    calculation-invoke-failed）；场景缺计算点的定性写在注释里、待真机定，
+    不在这里改语义。"""
+    t = _src(UGR_PS1)
+    assert "IsEnabled" in t, "Invoke 前缺 IsEnabled 判定"
+    assert "calc-button-disabled" in t, "禁用态要报成人话码"
+    assert "calculation-invoke-failed" in t, "原异常兜底仍在（IsEnabled 读不到时）"
+    assert "pending the next real-machine round" in t, "场景定性挂待定，不武断当 bug 改"
