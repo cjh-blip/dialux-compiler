@@ -250,6 +250,10 @@ def test_report_ps1_select_confirm_gate_precedes_ok():
     assert "'?unreadable'" not in t, "selected= 名字字段同口径，不许 ? 前缀"
     assert "$selIsTarget" in t, "找到选中≠选中是目标：两职责必须分变量（否则重试与证据读被短路）"
     assert "-not $selIsTarget -and $printBtn -eq 0" in t, "过闸判据必须基于分离后的目标变量"
+    # 第七批（第六枪两路矛盾：target_pat=1 与名字路不同源、anc=err）
+    assert "$targetNow" in t, "target 必须在闸时容器内重定位（与名字路同源）"
+    assert "tfind=" in t, "重定位结果进现场（分辨入场/闸时容器是否同实例）"
+    assert "'na'" in t, "same 三态：rid 缺失不冒充 mismatch"
     fail_line = [ln for ln in t.splitlines() if "report-mode-not-confirmed" in ln][0]
     for word in ("bounce", "revert", "switched-back"):
         assert word not in fail_line.lower(), f"失败码预设了回切结论：{word}"
@@ -320,3 +324,6 @@ def test_ugr_ps1_expands_position_section():
     assert "position-controls-missing-after-point" in t, "兑底失败码不许删（信号权威在用）"
     assert "attempts=" in t, "时序重试必须带次数进现场（分辨时序 vs 结构）"
     assert "loc=" in t and "x=" in t, "逐字段与展开状态进现场"
+    # 第七批（第六枪 pos_probe 铁证）：真身 id 改名
+    assert "ById 'Positioning_X'" in t, "定位字段真身 id＝Positioning_X/Y/Z（vecAid_hits=0）"
+    assert "ById 'PositionVectorControl_X'" not in t, "旧 id 必须已从代码路径移除"

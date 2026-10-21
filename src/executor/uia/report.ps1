@@ -277,8 +277,7 @@ $containerVia = 'none'
 $ancState = 'miss'
 $crect = '-'
 $coff = '-'
-$modeRid = ''
-try { $modeRid = (($mode.Current.RuntimeId) -join '.') } catch { $modeRid = 'err' }
+$tfind = 'miss'
 # 2026-10-21 fifth batch (fourth-gun evidence): the provider returned NULL
 # for IsSelected and an empty RuntimeId on these elements (err=0, not an
 # exception) -- so every single-path read that assumed a True/False answer
@@ -316,6 +315,32 @@ if ($tabs2 -ne $null) {
     $tc2 = New-Object System.Windows.Automation.PropertyCondition(
         [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
         [System.Windows.Automation.ControlType]::TabItem)
+    # Seventh batch (sixth-gun core evidence `target_pat=1` while the name
+    # path read CalculationObjectTool, matching the lit mode bar): the two
+    # paths were reading DIFFERENT elements -- target_* read the ENTRY-
+    # matched $mode (whose ancestor walk errors: anc=err) while selected=
+    # came from the gate-time container. Re-locate the target INSIDE the
+    # gate-time container; that element now serves the select (replay +
+    # retry) and both target reads, i.e. same source as the name path.
+    # Evidence-driven, not a conclusion: whether entry/gate containers are
+    # truly different instances is pending real machine (entry container
+    # rect was never recorded) -- tfind=/same= in the scene will tell.
+    $targetNow = $null
+    $tnItems = $tabs2.FindAll([System.Windows.Automation.TreeScope]::Descendants, $tc2)
+    for ($k = 0; $k -lt $tnItems.Count; $k++) {
+        $tnm = ''
+        try { $tnm = [string]$tnItems.Item($k).Current.Name } catch { }
+        if ($tnm -match 'ResultMode') { $targetNow = $tnItems.Item($k); $tfind = 'hit'; break }
+    }
+    $tnRid = ''
+    if ($targetNow -ne $null) {
+        try { $tnRid = (($targetNow.Current.RuntimeId) -join '.') } catch { }
+        # replay the entry intent on the LIVE container-local target (the
+        # entry act ran against $mode whose ancestor walk errors)
+        try { $targetNow.GetCurrentPattern([System.Windows.Automation.ScrollItemPattern]::Pattern).ScrollItemIntoView() } catch { }
+        try { $targetNow.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select() } catch { }
+        Start-Sleep -Milliseconds 600
+    }
     $round = 0
     while ($round -lt 2 -and -not $selIsTarget) {
         $round++
@@ -340,30 +365,40 @@ if ($tabs2 -ne $null) {
                 $readback = 'selected-tab'
                 $sRid = ''
                 try { $sRid = (($all2.Item($i2).Current.RuntimeId) -join '.') } catch { }
-                if ($sRid -ne '' -and $sRid -eq $modeRid) { $sameRid = '1' } else { $sameRid = '0' }
+                # same: 1/0, 'na' when rid is missing on either side (seventh
+                # batch -- rid-unavailable must not masquerade as mismatch)
+                if ($sRid -eq '' -or $tnRid -eq '') { $sameRid = 'na' }
+                elseif ($sRid -eq $tnRid) { $sameRid = '1' }
+                else { $sameRid = '0' }
                 if ($selName -match 'ResultMode') { $selIsTarget = $true }
                 break
             }
             if ($selIsTarget) { break }
             Start-Sleep -Milliseconds 250
         }
-        if (-not $selIsTarget -and $round -eq 1) {
-            # retry: make the tab visible, Select again, re-scan
-            try { $mode.GetCurrentPattern([System.Windows.Automation.ScrollItemPattern]::Pattern).ScrollItemIntoView() } catch { }
-            try { $mode.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select() } catch { }
+        if (-not $selIsTarget -and $round -eq 1 -and $targetNow -ne $null) {
+            # retry: re-select the container-local target, re-scan
+            try { $targetNow.GetCurrentPattern([System.Windows.Automation.ScrollItemPattern]::Pattern).ScrollItemIntoView() } catch { }
+            try { $targetNow.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select() } catch { }
             Start-Sleep -Milliseconds 600
         }
     }
-    # UNCONDITIONAL target reads (fifth-gun '?' never again): the evidence
-    # pair is collected whatever the container scan found.
-    try {
-        $tv = $mode.Current.IsSelected
-        if ($null -eq $tv) { $targetSel = 'null' } elseif ($tv) { $targetSel = '1' } else { $targetSel = '0' }
-    } catch { $targetSel = 'err'; $readErr++ }
-    try {
-        $tpv = $mode.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Current.IsSelected
-        if ($null -eq $tpv) { $targetPat = 'null' } elseif ($tpv) { $targetPat = '1' } else { $targetPat = '0' }
-    } catch { $targetPat = 'err' }
+    # UNCONDITIONAL target reads on the SAME-SOURCE element (fifth-gun '?'
+    # never again; sixth-gun two-path contradiction now means one element):
+    # absent target -> both err, scene carries tfind=miss.
+    if ($targetNow -eq $null) {
+        $targetSel = 'err'
+        $targetPat = 'err'
+    } else {
+        try {
+            $tv = $targetNow.Current.IsSelected
+            if ($null -eq $tv) { $targetSel = 'null' } elseif ($tv) { $targetSel = '1' } else { $targetSel = '0' }
+        } catch { $targetSel = 'err'; $readErr++ }
+        try {
+            $tpv = $targetNow.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Current.IsSelected
+            if ($null -eq $tpv) { $targetPat = 'null' } elseif ($tpv) { $targetPat = '1' } else { $targetPat = '0' }
+        } catch { $targetPat = 'err' }
+    }
 }
 # Functional second way through: the print button lives ONLY on the report
 # page (see block comment above). Checked when the tab-name way failed (2s)
@@ -379,9 +414,9 @@ if (-not $selIsTarget) {
 }
 if (-not $selIsTarget -and $printBtn -eq 0) {
     # human-readable failure carrying the whole scene (Esc keeps the pipe ASCII)
-    Fail 'report-mode' ("report-mode-not-confirmed selected='{0}' readback={1} via={2} target_selected={3} target_pat={4} same={5} container={6} anc={7} crect={8} coff={9} read_err={10} print_btn={11}" -f (Esc $selName), $readback, $modeVia, $targetSel, $targetPat, $sameRid, $containerVia, $ancState, $crect, $coff, $readErr, $printBtn)
+    Fail 'report-mode' ("report-mode-not-confirmed selected='{0}' readback={1} via={2} target_selected={3} target_pat={4} same={5} container={6} anc={7} crect={8} coff={9} read_err={10} print_btn={11} tfind={12}" -f (Esc $selName), $readback, $modeVia, $targetSel, $targetPat, $sameRid, $containerVia, $ancState, $crect, $coff, $readErr, $printBtn, $tfind)
 }
-Emit 'report-mode' 'ok' ("via={0} selected={1} same={2} print_btn={3}" -f $modeVia, (Esc $selName), $sameRid, $printBtn)
+Emit 'report-mode' 'ok' ("via={0} selected={1} same={2} print_btn={3} tfind={4}" -f $modeVia, (Esc $selName), $sameRid, $printBtn, $tfind)
 
 # ------------------------------------------------------- 2) trigger print
 # Measured 2026-10-19 E2: the entry id is ButtonPrintDocument, and a raw
