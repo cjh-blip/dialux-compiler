@@ -148,64 +148,79 @@ function Ensure-On([object]$el) {
     } catch { }
 }
 
-# Joined UIA names of a dialog (report.ps1's proven classifier). Returned raw
-# for in-memory matching; callers Esc() before printing so this ASCII file
-# never carries CJK.
-function Get-DlgUiText([IntPtr]$h) {
-    try {
-        $w = [System.Windows.Automation.AutomationElement]::FromHandle($h)
-        $head = ''
-        try { $head = [string]$w.Current.Name } catch { }
-        $all = $w.FindAll([System.Windows.Automation.TreeScope]::Descendants,
-                          [System.Windows.Automation.Condition]::TrueCondition)
-        $sb = New-Object System.Text.StringBuilder 4096
-        for ($i = 0; $i -lt $all.Count; $i++) {
-            try { [void]$sb.Append($all.Item($i).Current.Name).Append(' ') } catch { }
-        }
-        return ($head + ' ' + $sb.ToString())
-    } catch { return '' }
-}
-
-# The DIALux confirm raised when fresh results are about to be invalidated.
-# 2026-10-20 second gun (4b): it sat between the place-Invoke and the viewport
-# click and swallowed the click whole (the reason 4b/4c never got
-# PositionVectorControl). The message is Chinese; the fingerprint is built
-# from char codes at runtime ('results will be invalid'), so this file stays
-# pure ASCII. A visible DIALux #32770 that is NOT that confirm fails with its
-# escaped text -- no guessing which dialog to click.
+# The DIALux results-invalid confirm: 2026-10-21 (third gun) OVERTURNED the
+# #32770 assumption -- it has NO independent HWND. It is a WPF overlay drawn
+# INSIDE the main window (EnumWindows sees no #32770 for the pid, no message
+# text to fingerprint). Measured live: buttons are UIA AutomationId 'Yes' /
+# 'No', ControlType Button, rects 870,607 and 965,607 (same row); Invoke('Yes')
+# makes the overlay vanish and CalculationButtonStart goes False -> True.
+# The finder speaks UIA now: the confirm = a Yes Button WITH a No partner on
+# the same row (<=24px). A lone Yes is a structure we do not recognise ->
+# fail with its scene, never click it. The measured clean state has ZERO Yes
+# elements, so an idle scan finds nothing and returns $null. AutomationId is
+# ASCII -- the CJK char-code fingerprint is gone, file stays pure ASCII.
 function Find-ResultInvalidModal([int]$timeout) {
-    $fp = -join ([char[]]@(0x7ED3, 0x679C, 0x5C06, 0x65E0, 0x6548))
+    $yc = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::AutomationIdProperty, 'Yes')
+    $nc = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::AutomationIdProperty, 'No')
     $sw = [Diagnostics.Stopwatch]::StartNew()
     while ($sw.ElapsedMilliseconds -lt $timeout) {
-        $h = [IntPtr]::Zero
-        while ($true) {
-            $h = [UG.U]::FindWindowEx([IntPtr]::Zero, $h, '#32770', [NullString]::Value)
-            if ($h -eq [IntPtr]::Zero) { break }
-            $wpid = 0
-            [void][UG.U]::GetWindowThreadProcessId($h, [ref]$wpid)
-            if ($wpid -ne $proc.Id) { continue }
-            if (-not [UG.U]::IsWindowVisible($h)) { continue }
-            $txt = Get-DlgUiText $h
-            if ($txt.IndexOf($fp) -ge 0) { return $h }
-            $snip = ($txt -replace '\s+', ' ')
-            if ($snip.Length -gt 120) { $snip = $snip.Substring(0, 120) }
-            Fail 'ugr-point' ("unexpected-modal ui='{0}'" -f (Esc $snip))
+        $allYes = $main.FindAll([System.Windows.Automation.TreeScope]::Descendants, $yc)
+        for ($i = 0; $i -lt $allYes.Count; $i++) {
+            $y = $allYes.Item($i)
+            $isBtn = $false
+            try { $isBtn = ($y.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button) } catch { }
+            $rxv = 0.0
+            $ryv = 0.0
+            try { $rby = $y.Current.BoundingRectangle; $rxv = $rby.X; $ryv = $rby.Y } catch { }
+            if (-not $isBtn) {
+                Fail 'ugr-point' ("unexpected-modal ui='aid=Yes non-button rect={0},{1}'" -f [int]$rxv, [int]$ryv)
+            }
+            $allNo = $main.FindAll([System.Windows.Automation.TreeScope]::Descendants, $nc)
+            $pair = $false
+            for ($k = 0; $k -lt $allNo.Count; $k++) {
+                $no = $allNo.Item($k)
+                $noBtn = $false
+                try { $noBtn = ($no.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button) } catch { }
+                if (-not $noBtn) { continue }
+                $rn = 0.0
+                try { $rn = $no.Current.BoundingRectangle.Y } catch { }
+                if ([math]::Abs($rn - $ryv) -le 24) { $pair = $true; break }
+            }
+            if (-not $pair) {
+                Fail 'ugr-point' ("unexpected-modal ui='aid=Yes rect={0},{1} pair=0'" -f [int]$rxv, [int]$ryv)
+            }
+            return $y
         }
         Start-Sleep -Milliseconds 150
     }
-    return [IntPtr]::Zero
+    return $null
 }
-# Returns 'none' or 'confirmed'; fails with scene on an unknown modal.
+# Returns 'none' or 'confirmed'; fails with scene when the overlay does not
+# go away. The re-check only looks for a surviving Yes -- a half-dismissed
+# overlay can briefly lose its No partner, and that race must not fail here.
 function Confirm-ResultInvalidModal([int]$timeout) {
-    $h = Find-ResultInvalidModal $timeout
-    if ($h -eq [IntPtr]::Zero) { return 'none' }
-    $yes = [UG.U]::GetDlgItem($h, 6)   # IDYES of a standard confirm box
-    if ($yes -eq [IntPtr]::Zero) { Fail 'ugr-point' 'result-invalid-modal-yes-missing' }
-    [void][UG.U]::SendMessage($yes, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)   # BM_CLICK
+    $yes = Find-ResultInvalidModal $timeout
+    if ($yes -eq $null) { return 'none' }
+    try {
+        $yes.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+    } catch {
+        Fail 'ugr-point' 'result-invalid-modal-yes-invoke-failed'
+    }
     Start-Sleep -Milliseconds 600
-    # If it is still up we did not really dismiss it -- say so instead of
-    # letting the next click vanish into the modal again (4b verbatim).
-    if ((Find-ResultInvalidModal 600) -ne [IntPtr]::Zero) { Fail 'ugr-point' 'result-invalid-modal-not-dismissed' }
+    $yc2 = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::AutomationIdProperty, 'Yes')
+    $still = $false
+    $swR = [Diagnostics.Stopwatch]::StartNew()
+    while ($swR.ElapsedMilliseconds -lt 800) {
+        if ($main.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $yc2) -ne $null) {
+            $still = $true
+            break
+        }
+        Start-Sleep -Milliseconds 150
+    }
+    if ($still) { Fail 'ugr-point' 'result-invalid-modal-not-dismissed' }
     return 'confirmed'
 }
 
@@ -265,6 +280,13 @@ if ($haveCoords) {
     # manual sequence (4d): select bottom-bar point -> place -> click.
     # The item name is Chinese -> built from char codes at runtime so the
     # file stays pure ASCII.
+    # 2026-10-21 (third gun) two facts fixed here: (a) the name was a
+    # SUBSTRING trap -- the scene's results list carries rows like '<point>
+    # 1' that also contain the target word AND sit earlier in tree order, so
+    # the old contains-match selected a results row (independent re-read said
+    # the BAR item was selected while our gate said not-selected, twice);
+    # match EXACTLY (measured: li name == the bare word) and keep name@x,y of
+    # every rejected candidate so a miss is diagnosable at a glance.
     $ptName = -join ([char[]]@(0x8BA1, 0x7B97, 0x70B9))   # 'calculation point'
     $liCond = New-Object System.Windows.Automation.PropertyCondition(
         [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
@@ -279,11 +301,15 @@ if ($haveCoords) {
         if ($selPat -eq $null) { continue }
         $nm = ''
         try { $nm = [string]$li.Current.Name } catch { }
-        if ($nm.IndexOf($ptName) -ge 0) { $ptItem = $li; break }
-        if ($nm -ne '') { $barCand += $nm }
+        if ($nm -eq $ptName) { $ptItem = $li; break }
+        if ($nm -ne '') {
+            $rxs = '?'
+            try { $rbx = $li.Current.BoundingRectangle; $rxs = ("{0},{1}" -f [int]$rbx.X, [int]$rbx.Y) } catch { }
+            $barCand += ("{0}@{1}" -f $nm, $rxs)
+        }
     }
     if ($ptItem -eq $null) {
-        # not found = scene with the candidate names attached, so the next
+        # not found = scene with the candidate names+rects attached, so the next
         # real-machine round can pin the right item instead of guessing.
         $cand = ($barCand | Select-Object -First 12) -join ' ; '
         Fail 'ugr-point' ("bottombar-point-item-not-found candidates='{0}'" -f (Esc $cand))
@@ -294,19 +320,49 @@ if ($haveCoords) {
         Fail 'ugr-point' 'bottombar-point-select-failed'
     }
     # Select() claiming ok is exactly the item5 report-mode trap; confirm the
-    # item really carries the selection before anything gets clicked.
+    # item really carries the selection before anything gets clicked -- but on
+    # a FRESH element every poll: Select itself rebuilds parts of the UIA tree
+    # and a cached wrapper goes stale (Current throws; the old code swallowed
+    # it and read a permanent false -- third gun: independent re-read said
+    # selected=True while our gate said not-selected, twice). Re-locate by
+    # RuntimeId first (same element), fall back to an exact-name lookup
+    # (recreated element), and count read exceptions into the scene.
     $typeOk = $false
+    $readStat = 'unmatched'
+    $readErr = 0
+    $ptRid = ''
+    try { $ptRid = (($ptItem.Current.RuntimeId) -join '.') } catch { $ptRid = '?' }
+    $ptRect = '?'
+    try { $rb0 = $ptItem.Current.BoundingRectangle; $ptRect = ("{0},{1}" -f [int]$rb0.X, [int]$rb0.Y) } catch { }
     $swT = [Diagnostics.Stopwatch]::StartNew()
-    while ($swT.ElapsedMilliseconds -lt 1500) {
-        $isSel = $false
-        try { $isSel = $ptItem.Current.IsSelected } catch { }
-        if ($isSel) { $typeOk = $true; break }
-        Start-Sleep -Milliseconds 200
+    while ($swT.ElapsedMilliseconds -lt 2000) {
+        $fresh = $null
+        $nameHit = $null
+        $scan = $main.FindAll([System.Windows.Automation.TreeScope]::Descendants, $liCond)
+        for ($j = 0; $j -lt $scan.Count; $j++) {
+            $c2 = $scan.Item($j)
+            $nm2 = ''
+            try { $nm2 = [string]$c2.Current.Name } catch { continue }
+            if ($nm2 -ne $ptName) { continue }
+            $r2 = ''
+            try { $r2 = (($c2.Current.RuntimeId) -join '.') } catch { }
+            if ($r2 -ne '' -and $r2 -eq $ptRid) { $fresh = $c2; break }
+            if ($nameHit -eq $null) { $nameHit = $c2 }
+        }
+        if ($fresh -eq $null) { $fresh = $nameHit }
+        if ($fresh -eq $null) {
+            $readStat = 'stale'
+        } else {
+            $isSel = $false
+            try { $isSel = $fresh.Current.IsSelected; $readStat = [string]$isSel } catch { $readErr++; $readStat = 'read-err' }
+            if ($isSel) { $typeOk = $true; break }
+        }
+        Start-Sleep -Milliseconds 250
     }
     if (-not $typeOk) {
         $nmMatched = ''
-        try { $nmMatched = [string]$ptItem.Current.Name } catch { }
-        Fail 'ugr-point' ("bottombar-point-not-selected name='{0}'" -f (Esc $nmMatched))
+        try { $nmMatched = [string]$ptItem.Current.Name } catch { $nmMatched = $ptName }
+        Fail 'ugr-point' ("bottombar-point-not-selected name='{0}' rid={1} rect={2} read={3} err={4}" -f (Esc $nmMatched), $ptRid, $ptRect, $readStat, $readErr)
     }
 
     $newPoint = ById 'aid_NewPointCalculationObject' 3000

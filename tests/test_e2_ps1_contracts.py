@@ -169,7 +169,13 @@ def test_driver_ps1_pastes_exactly_one_target():
 
 def test_driver_ps1_readback_gate_needs_the_real_path():
     """①＋③ 读回双闸（轮询 Win32 ＋ UIA Name），且只认带 $full 的值；
-    via=clipboard 必须是代码真会走到的取值（回执抓到过『代码里不存在』）。"""
+    via=clipboard 必须是代码真会走到的取值（回执抓到过『代码里不存在』）。
+
+    注（2026-10-21 第三枪点4④）：`filename-duplicated` 现码**不可达**——
+    attach 在 dialux_driver.ps1:173 的存在性检查先拦，:386 的闸只认旧版
+    双 paste，而现行码已是单目标 paste；要样本需回归双 paste 版的测试
+    夹具。记在这里免得后人以为漏验。
+    """
     t = _src(DRIVER_PS1)
     assert "Field-Has" in t, "读回只认带路径的值，非空不算"
     assert "Read-FieldUiA" in t, "第二闸（UIA Name）缺失＝Win32 读空就误判降级"
@@ -228,6 +234,12 @@ def test_report_ps1_select_confirm_gate_precedes_ok():
         "确认闸必须在 report-mode ok 之前")
     assert "selected=" in t and "readback=" in t, "失败要带现场（选中名＋读回路径＋命中趟次）"
     assert "function Esc(" in t, "现场含中文，必须有 ASCII 转义"
+    # 第三枪推翻『读回随便哪个容器都行』：同源容器＋证据位＋重试
+    assert "TreeScope]::Ancestors" in t, "容器必须从 $mode 祖先解析（防两次 ById 落到不同实例）"
+    assert "ScrollItemIntoView" in t, "重试前先滚入视口（tab 19 可能不在可见带）"
+    assert "target_selected=" in t, "目标自身 IsSelected 是证据（谁在说谎一目了然）"
+    assert "crect=" in t, "容器 rect/offscreen 进现场（幽灵实例就藏在这里）"
+    assert "read_err=" in t, "读取异常不许默吞"
     fail_line = [ln for ln in t.splitlines() if "report-mode-not-confirmed" in ln][0]
     for word in ("bounce", "revert", "switched-back"):
         assert word not in fail_line.lower(), f"失败码预设了回切结论：{word}"
@@ -256,19 +268,27 @@ def test_ugr_ps1_places_point_switching_bottombar_type():
     assert "bottombar-point-not-selected" in t, "切型也要读回（Select 假阳性同病）"
     assert "0x8BA1" in t and "0x7B97" in t and "0x70B9" in t, (
         "『计算点』指纹必须 char 码运行时拼（纯 ASCII 契约）")
+    # 第三枪两败的根因修：子串匹配命中结果摘要行「计算点 1」＋缓存句柄 stale
+    assert "-eq $ptName" in t, "必须等值匹配（子串会命中带序号的结果摘要行）"
+    assert "RuntimeId" in t, "复读按 RuntimeId 重定位（Select 重建树，旧 RCW 读抛异常被吞＝恒 false）"
+    assert "nameHit" in t, "树重建后按等值名回退重定位"
+    assert "rect=" in t and "err=" in t, "失败带位置与读异常计数现场"
 
 
 def test_ugr_ps1_handles_results_invalid_modal():
-    """《结果将无效，是否继续操作？》模态（4b 截住视口点击）：置入后与
-    落点后各收一次；指纹 char 码构建、IDYES(6) 确认、收没收到要复读、
-    不认识的模态带原文失败不猜。"""
+    """《结果将无效》模态（第三枪推翻 #32770 假设）：WPF 覆盖层无独立
+    HWND、拿不到 IDYES(6)——按钮＝UIA AutomationId Yes/No 成对（同排），
+    Invoke Yes 后复读必须消失；孤立 Yes＝不认识的结构不点、带现场失败；
+    置入后与落点后各收一次。"""
     t = _src(UGR_PS1)
     assert "function Find-ResultInvalidModal" in t
-    assert "0x7ED3" in t and "0x679C" in t and "0x5C06" in t, (
-        "模态指纹（结果将无效）必须 char 码运行时拼")
-    assert "GetDlgItem($h, 6)" in t, "IDYES(6) 才是确认钮"
-    assert "unexpected-modal" in t, "不认识的模态不猜、带原文失败"
-    assert "result-invalid-modal-not-dismissed" in t, "确认后要复读确认真收了"
+    assert "'Yes'" in t and "'No'" in t, "按钮指纹＝AutomationId（ASCII，不再 char 码）"
+    assert "0x7ED3" not in t, "CJK 字符码指纹已随 #32770 假设废弃"
+    assert "'#32770'" not in t, "无 HWND：Win32 窗口枚举路必须已删"
+    assert "GetDlgItem($h, 6)" not in t, "IDYES(6)+BM_CLICK 实测走不通，必须已删"
+    assert "InvokePattern" in t, "确认走 UIA Invoke"
+    assert "unexpected-modal" in t, "孤立 Yes/结构不符不猜，带原文现场失败"
+    assert "result-invalid-modal-not-dismissed" in t, "收后要复读确认真收了"
     assert t.count("Confirm-ResultInvalidModal") >= 3, "定义＋置入后＋落点后两处调用"
 
 
