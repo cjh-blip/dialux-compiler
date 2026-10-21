@@ -211,3 +211,72 @@ def test_ugr_ps1_checks_enabled_before_invoke():
     assert "calc-button-disabled" in t, "禁用态要报成人话码"
     assert "calculation-invoke-failed" in t, "原异常兜底仍在（IsEnabled 读不到时）"
     assert "pending the next real-machine round" in t, "场景定性挂待定，不武断当 bug 改"
+
+
+# ------------------------------------------- 6) 第三批（2026-10-20 第二枪回执 → 五棒落码）
+# 仍是静态契约：本机无 pwsh，能否真跑通归 Windows 第三枪。
+
+def test_report_ps1_select_confirm_gate_precedes_ok():
+    """项5 Select 确认闸：Select 报 ok 但模式没落报表页（本枪两败根，
+    print-entry-not-found-use-PrintMenuId）。读回选中页签名含 ResultMode
+    才 Emit ok；假阳性带现场人话失败，且不预设「回切」结论。"""
+    t = _src(REPORT_PS1)
+    assert "IsSelected" in t, "缺读回选中页签"
+    assert "$selName -notmatch 'ResultMode'" in t, "选中页签名不含 ResultMode 不放行"
+    assert "report-mode-not-confirmed" in t, "假阳性缺专属人话码"
+    assert t.index("report-mode-not-confirmed") < t.index("Emit 'report-mode' 'ok'"), (
+        "确认闸必须在 report-mode ok 之前")
+    assert "selected=" in t and "readback=" in t, "失败要带现场（选中名＋读回路径＋命中趟次）"
+    assert "function Esc(" in t, "现场含中文，必须有 ASCII 转义"
+    fail_line = [ln for ln in t.splitlines() if "report-mode-not-confirmed" in ln][0]
+    for word in ("bounce", "revert", "switched-back"):
+        assert word not in fail_line.lower(), f"失败码预设了回切结论：{word}"
+
+
+def test_ugr_ps1_recalc_completion_waits_for_value_emergence():
+    """重算假完成沿（4d 附带发现，via=result sec=12 返回时面板全 '-'）：
+    res_before 有值时，完成必须先观察到清场（dashSeen＝行在值没了的读，
+    空读不算），再等值真从 '-' 变出；旧的『一变即完成』判据必须已删。"""
+    t = _src(UGR_PS1)
+    assert "$hadValue" in t and "$dashSeen" in t, "两段新状态位缺失"
+    assert r"\d+(?:\.\d+)?\s*lx" in t, "值判据（数字紧邻 lx）必须显式写出来"
+    assert "resNow -ne $resBefore -and $sw.Elapsed" not in t, "旧的一变即完成判据还在"
+    assert "dash_seen=" in t, "超时现场要带清场观察位"
+    assert "second-gun receipt (4d" in t, "重算场景的来龙去脉要写在注释里"
+
+
+def test_ugr_ps1_places_point_switching_bottombar_type():
+    """动作内放点路第一层（回执活A 4b/4c 钉死）：aid_NewPointCalculationObject
+    是通用『置入计算元件』——底栏类型不切，点击永远建面、
+    PositionVectorControl 永不出现；切型同样要读回确认。"""
+    t = _src(UGR_PS1)
+    assert "ControlType]::ListItem" in t, "底栏条目在 ListItem 层找"
+    assert "SelectionItemPattern" in t, "类型切换走 SelectionItem"
+    assert "bottombar-point-item-not-found" in t, "找不到要带候选现场"
+    assert "bottombar-point-not-selected" in t, "切型也要读回（Select 假阳性同病）"
+    assert "0x8BA1" in t and "0x7B97" in t and "0x70B9" in t, (
+        "『计算点』指纹必须 char 码运行时拼（纯 ASCII 契约）")
+
+
+def test_ugr_ps1_handles_results_invalid_modal():
+    """《结果将无效，是否继续操作？》模态（4b 截住视口点击）：置入后与
+    落点后各收一次；指纹 char 码构建、IDYES(6) 确认、收没收到要复读、
+    不认识的模态带原文失败不猜。"""
+    t = _src(UGR_PS1)
+    assert "function Find-ResultInvalidModal" in t
+    assert "0x7ED3" in t and "0x679C" in t and "0x5C06" in t, (
+        "模态指纹（结果将无效）必须 char 码运行时拼")
+    assert "GetDlgItem($h, 6)" in t, "IDYES(6) 才是确认钮"
+    assert "unexpected-modal" in t, "不认识的模态不猜、带原文失败"
+    assert "result-invalid-modal-not-dismissed" in t, "确认后要复读确认真收了"
+    assert t.count("Confirm-ResultInvalidModal") >= 3, "定义＋置入后＋落点后两处调用"
+
+
+def test_ugr_ps1_expands_position_section():
+    """动作内放点路第二因（4b/4c）：属性面板『定位』栏默认折叠，
+    字段不展开不暴露；展开失败仍有 position-controls 闸兑底带现场。"""
+    t = _src(UGR_PS1)
+    assert "0x5B9A" in t and "0x4F4D" in t, "『定位』指纹必须 char 码运行时拼"
+    assert "$locName" in t
+    assert "ExpandCollapsePattern" in t
+    assert "position-controls-missing-after-point" in t, "兑底失败码不许删（信号权威在用）"
