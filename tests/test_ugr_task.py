@@ -60,6 +60,20 @@ def test_extract_ugr_fixture_e5_p5():
     assert _extract_ugr("计算点 1 (RUG) 最大 16.2 目标 <= 19.0") == 16.2
 
 
+def test_extract_ugr_fixture_e7_p3():
+    """第八批：第七枪原文 fixture 第二例（2,524B）——跨样本 max 口径双保险：
+    新增计算点 6/7 重算出 29.6/29.5 后 **期望 29.6**（max{29.2,29.3,
+    29.6,29.5,28.9}）；本样本无表头段，`1/1` 不得出现（上枪误锚源）；
+    两例 fixture 一并锁死结构排除与取 max 语义。"""
+    fix = Path(__file__).parent / "fixtures" / "e7_p3_panel_text.txt"
+    text = fix.read_text(encoding="utf-8").strip()
+    assert "1/1" not in text, "本样本无表头污染（上枪误锚源）"
+    assert _extract_ugr(text) == 29.6
+    # 双样本同一函数同口径
+    fix1 = Path(__file__).parent / "fixtures" / "e5_p5_panel_text.txt"
+    assert _extract_ugr(fix1.read_text(encoding="utf-8").strip()) == 29.3
+
+
 def test_absorb_read_splits_text_and_params():
     r = UgrResult()
     detail = (

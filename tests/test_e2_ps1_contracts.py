@@ -222,41 +222,50 @@ def test_ugr_ps1_checks_enabled_before_invoke():
 # ------------------------------------------- 6) 第三批（2026-10-20 第二枪回执 → 五棒落码）
 # 仍是静态契约：本机无 pwsh，能否真跑通归 Windows 第三枪。
 
-def test_report_ps1_select_confirm_gate_precedes_ok():
-    """项5 Select 确认闸：Select 报 ok 但模式没落报表页（本枪两败根，
-    print-entry-not-found-use-PrintMenuId）。读回选中页签名含 ResultMode
-    才 Emit ok；假阳性带现场人话失败，且不预设「回切」结论。"""
+def test_report_ps1_fourth_way_scan_gate():
+    """第八批（第七枪 modebar 根因）：主路换第四路——模式栏同行
+    ElementFromPoint 横扫（「报表」词优先、「导出」次之，char 码运行时拼）
+    → 点击（Invoke/中心/像素三级）→ **过闸唯一判据＝print_btn**（只在报表
+    页存在，四枪证据）；旧 tab-name 路降为 legacy 记录不再动作（根因＝
+    ResultMode TabItem 视觉标签就是计算元件页，选它=切错页）；点后读回
+    双路四态保留为现场；扫描找不到则带命中清单人话失败，不盲点。"""
     t = _src(REPORT_PS1)
-    assert "IsSelected" in t, "缺读回选中页签"
-    assert "$selName -match 'ResultMode'" in t, "目标判定仍以选中页签名含 ResultMode 为准（第六批：$selIsTarget 由此置位）"
-    assert "report-mode-not-confirmed" in t, "假阳性缺专属人话码"
+    # 第四路四要素
+    assert "FromPoint" in t, "命中测试横扫（信任像素不信任 id/名字）"
+    assert "0x62A5" in t and "0x8868" in t, "『报表』词 char 码运行时拼"
+    assert "0x5BFC" in t and "0x51FA" in t, "『导出』次选词 char 码"
+    assert "modebar-scan" in t, "via 标识（含 scan-miss 变体）"
+    assert "hits=" in t, "扫描命中清单进现场（miss 也带回看见了什么）"
+    assert "legacy=" in t, "旧 tab-name 路降级为记录性字段"
+    assert "$printBtn -ne 1" in t, "过闸唯一判据＝print_btn"
+    assert "tab-name-resultmode" in t, "legacy 记录仍标命中趟次"
+    # 旧主路必须不再动作（入口 acted 链与重选重试整体移除）
+    assert "report-entry-neither-invoke-nor-select" not in t, "入口 Select 动作链已移除"
+    assert "report-entry-not-found" not in t, "legacy 匹配失败不再硬停（非致命记录）"
+    assert "ScrollItemIntoView" not in t, "对 ResultMode 的重选/重试已随根因移除"
+    assert "$selIsTarget" not in t, "旧名字过闸变量已退役（谓词只有 print_btn）"
+    # 证据字段延续（现场不丢）
+    assert "IsSelected" in t
+    assert "report-mode-not-confirmed" in t
     assert t.index("report-mode-not-confirmed") < t.index("Emit 'report-mode' 'ok'"), (
-        "确认闸必须在 report-mode ok 之前")
-    assert "selected=" in t and "readback=" in t, "失败要带现场（选中名＋读回路径＋命中趟次）"
+        "失败必须在 report-mode ok 之前")
+    assert "selected=" in t and "readback=" in t
     assert "function Esc(" in t, "现场含中文，必须有 ASCII 转义"
-    # 第三枪推翻『读回随便哪个容器都行』：同源容器＋证据位＋重试
-    assert "TreeScope]::Ancestors" in t, "容器必须从 $mode 祖先解析（防两次 ById 落到不同实例）"
-    assert "ScrollItemIntoView" in t, "重试前先滚入视口（tab 19 可能不在可见带）"
-    assert "target_selected=" in t, "目标自身 IsSelected 是证据（谁在说谎一目了然）"
-    assert "crect=" in t, "容器 rect/offscreen 进现场（幽灵实例就藏在这里）"
-    assert "read_err=" in t, "读取异常不许默吞"
-    # 第五批（第四枪证据：provider 对 IsSelected/RuntimeId 返回 null/空）
-    assert "print_btn=" in t, "落页功能信号（ButtonPrintDocument 只在报表页）并联过闸并进现场"
-    assert "target_pat=" in t, "pattern 路读数必须并联读且进现场"
-    assert "anc=" in t, "祖先解析 hit/miss/err 不许再空吞（第四批 catch{} 吞过一次）"
-    assert "'null'" in t, "四态记法：空值不得再伪装成 False"
-    # 第六批（第五枪 target_selected=? target_pat=? 野值）：
-    assert "= '?'" not in t, "四态闭集不许有 ? 哨兵（初始值必须是 err，Fail 前必达读）"
-    assert "'?unreadable'" not in t, "selected= 名字字段同口径，不许 ? 前缀"
-    assert "$selIsTarget" in t, "找到选中≠选中是目标：两职责必须分变量（否则重试与证据读被短路）"
-    assert "-not $selIsTarget -and $printBtn -eq 0" in t, "过闸判据必须基于分离后的目标变量"
-    # 第七批（第六枪两路矛盾：target_pat=1 与名字路不同源、anc=err）
-    assert "$targetNow" in t, "target 必须在闸时容器内重定位（与名字路同源）"
-    assert "tfind=" in t, "重定位结果进现场（分辨入场/闸时容器是否同实例）"
-    assert "'na'" in t, "same 三态：rid 缺失不冒充 mismatch"
-    fail_line = [ln for ln in t.splitlines() if "report-mode-not-confirmed" in ln][0]
-    for word in ("bounce", "revert", "switched-back"):
-        assert word not in fail_line.lower(), f"失败码预设了回切结论：{word}"
+    assert "TreeScope]::Ancestors" in t, "容器仍从 $mode 祖先解析（no-entry/err 进现场）"
+    assert "target_selected=" in t and "target_pat=" in t
+    assert "crect=" in t and "coff=" in t and "read_err=" in t
+    assert "print_btn=" in t and "anc=" in t and "tfind=" in t
+    assert "'null'" in t and "'na'" in t
+    assert "= '?'" not in t, "四态闭集不许 ? 哨兵"
+    assert "'?unreadable'" not in t, "名字字段同口径"
+    assert "$targetNow" in t, "target 重定位保留为只读证据"
+    # 失败码不预设结论（两种 Fail 都查）
+    fail_lines = [ln for ln in t.splitlines()
+                  if "report-mode-not-confirmed" in ln or "modebar-scan-miss" in ln]
+    assert fail_lines, "至少一种人话失败码"
+    for fl in fail_lines:
+        for word in ("bounce", "revert", "switched-back"):
+            assert word not in fl.lower(), f"失败码预设了回切结论：{word}"
 
 
 def test_ugr_ps1_recalc_completion_waits_for_value_emergence():
