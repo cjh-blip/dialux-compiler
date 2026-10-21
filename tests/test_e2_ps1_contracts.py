@@ -240,6 +240,11 @@ def test_report_ps1_select_confirm_gate_precedes_ok():
     assert "target_selected=" in t, "目标自身 IsSelected 是证据（谁在说谎一目了然）"
     assert "crect=" in t, "容器 rect/offscreen 进现场（幽灵实例就藏在这里）"
     assert "read_err=" in t, "读取异常不许默吞"
+    # 第五批（第四枪证据：provider 对 IsSelected/RuntimeId 返回 null/空）
+    assert "print_btn=" in t, "落页功能信号（ButtonPrintDocument 只在报表页）并联过闸并进现场"
+    assert "target_pat=" in t, "pattern 路读数必须并联读且进现场"
+    assert "anc=" in t, "祖先解析 hit/miss/err 不许再空吞（第四批 catch{} 吞过一次）"
+    assert "'null'" in t, "四态记法：空值不得再伪装成 False"
     fail_line = [ln for ln in t.splitlines() if "report-mode-not-confirmed" in ln][0]
     for word in ("bounce", "revert", "switched-back"):
         assert word not in fail_line.lower(), f"失败码预设了回切结论：{word}"
@@ -273,6 +278,10 @@ def test_ugr_ps1_places_point_switching_bottombar_type():
     assert "RuntimeId" in t, "复读按 RuntimeId 重定位（Select 重建树，旧 RCW 读抛异常被吞＝恒 false）"
     assert "nameHit" in t, "树重建后按等值名回退重定位"
     assert "rect=" in t and "err=" in t, "失败带位置与读异常计数现场"
+    # 第五批（第四枪证据：源头读出 rid='' read='' err=0，null 被 [string] 转成空）
+    assert "GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Current.IsSelected" in t, (
+        "pattern 路并联读：属性路与 pattern 路任一 True 才过闸")
+    assert "'null'" in t, "四态记法：空值不得再伪装成 False"
 
 
 def test_ugr_ps1_handles_results_invalid_modal():

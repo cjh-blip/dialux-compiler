@@ -263,17 +263,34 @@ $selName = ''
 $readback = 'no-tabcontrol'
 $readErr = 0
 $targetSel = '?'
+$targetPat = '?'
 $sameRid = '-'
 $containerVia = 'none'
+$ancState = 'miss'
 $crect = '-'
 $coff = '-'
 $modeRid = ''
 try { $modeRid = (($mode.Current.RuntimeId) -join '.') } catch { $modeRid = '?' }
+# 2026-10-21 fifth batch (fourth-gun evidence): the provider returned NULL
+# for IsSelected and an empty RuntimeId on these elements (err=0, not an
+# exception) -- so every single-path read that assumed a True/False answer
+# was reading a hole. Three upgrades, intent unchanged (confirm the report
+# page really carried the selection): (a) read BOTH paths -- the property
+# (.Current.IsSelected) and the pattern (.GetCurrentPattern(...).Current
+# .IsSelected) -- and accept EITHER as True; (b) record every read as one of
+# 1/0/null/err so an empty answer can never masquerade as False again;
+# (c) the print button (ButtonPrintDocument) exists ONLY on the report page
+# (both guns: whole-tree Print scan zero hits while unselected; measured id
+# when selected in E2) -> it becomes a second, functional way through the
+# gate, recorded as print_btn= either way.
 $tcIdCond = New-Object System.Windows.Automation.PropertyCondition(
     [System.Windows.Automation.AutomationElement]::AutomationIdProperty, 'ModeSelectionTabControl')
 $tabs2 = $null
 $anc = $null
-try { $anc = $mode.FindFirst([System.Windows.Automation.TreeScope]::Ancestors, $tcIdCond) } catch { }
+try {
+    $anc = $mode.FindFirst([System.Windows.Automation.TreeScope]::Ancestors, $tcIdCond)
+    if ($anc -ne $null) { $ancState = 'hit' }
+} catch { $ancState = 'err' }
 if ($anc -ne $null) {
     $tabs2 = $anc
     $containerVia = 'ancestors'
@@ -299,9 +316,17 @@ if ($tabs2 -ne $null) {
         $swSel = [Diagnostics.Stopwatch]::StartNew()
         while ($swSel.ElapsedMilliseconds -lt 1200 -and $selName -eq '') {
             for ($i2 = 0; $i2 -lt $all2.Count; $i2++) {
-                $isSel = $false
-                try { $isSel = $all2.Item($i2).Current.IsSelected } catch { $readErr++; continue }
-                if (-not $isSel) { continue }
+                $s1 = 'err'
+                try {
+                    $v1 = $all2.Item($i2).Current.IsSelected
+                    if ($null -eq $v1) { $s1 = 'null' } elseif ($v1) { $s1 = '1' } else { $s1 = '0' }
+                } catch { $readErr++ }
+                $s2 = 'err'
+                try {
+                    $v2 = $all2.Item($i2).GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Current.IsSelected
+                    if ($null -eq $v2) { $s2 = 'null' } elseif ($v2) { $s2 = '1' } else { $s2 = '0' }
+                } catch { $readErr++ }
+                if ($s1 -ne '1' -and $s2 -ne '1') { continue }
                 try { $selName = [string]$all2.Item($i2).Current.Name } catch { $selName = '?unreadable' }
                 $readback = 'selected-tab'
                 $sRid = ''
@@ -310,7 +335,14 @@ if ($tabs2 -ne $null) {
                 break
             }
             if ($selName -ne '') { break }
-            try { $targetSel = [string]$mode.Current.IsSelected } catch { $targetSel = 'err'; $readErr++ }
+            try {
+                $tv = $mode.Current.IsSelected
+                if ($null -eq $tv) { $targetSel = 'null' } elseif ($tv) { $targetSel = '1' } else { $targetSel = '0' }
+            } catch { $targetSel = 'err'; $readErr++ }
+            try {
+                $tpv = $mode.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Current.IsSelected
+                if ($null -eq $tpv) { $targetPat = 'null' } elseif ($tpv) { $targetPat = '1' } else { $targetPat = '0' }
+            } catch { $targetPat = 'err' }
             Start-Sleep -Milliseconds 250
         }
         if ($selName -eq '' -and $round -eq 1) {
@@ -321,14 +353,33 @@ if ($tabs2 -ne $null) {
         }
     }
     if ($selName -eq '') {
-        try { $targetSel = [string]$mode.Current.IsSelected } catch { $targetSel = 'err' }
+        try {
+            $tv = $mode.Current.IsSelected
+            if ($null -eq $tv) { $targetSel = 'null' } elseif ($tv) { $targetSel = '1' } else { $targetSel = '0' }
+        } catch { $targetSel = 'err' }
+        try {
+            $tpv = $mode.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Current.IsSelected
+            if ($null -eq $tpv) { $targetPat = 'null' } elseif ($tpv) { $targetPat = '1' } else { $targetPat = '0' }
+        } catch { $targetPat = 'err' }
     }
 }
+# Functional second way through: the print button lives ONLY on the report
+# page (see block comment above). Checked when the tab-name way failed (2s)
+# and recorded on every outcome (500ms on the tab-name way) so the two ways
+# can be cross-checked in the next receipt.
+$printBtn = 0
 if ($selName -notmatch 'ResultMode') {
-    # human-readable failure carrying the whole scene (Esc keeps the pipe ASCII)
-    Fail 'report-mode' ("report-mode-not-confirmed selected='{0}' readback={1} via={2} target_selected={3} same={4} container={5} crect={6} coff={7} read_err={8}" -f (Esc $selName), $readback, $modeVia, $targetSel, $sameRid, $containerVia, $crect, $coff, $readErr)
+    $pe = ById 'ButtonPrintDocument' 2000
+    if ($pe -ne $null) { $printBtn = 1 }
+} else {
+    $pe = ById 'ButtonPrintDocument' 500
+    if ($pe -ne $null) { $printBtn = 1 }
 }
-Emit 'report-mode' 'ok' ("via={0} selected={1} same={2}" -f $modeVia, (Esc $selName), $sameRid)
+if ($selName -notmatch 'ResultMode' -and $printBtn -eq 0) {
+    # human-readable failure carrying the whole scene (Esc keeps the pipe ASCII)
+    Fail 'report-mode' ("report-mode-not-confirmed selected='{0}' readback={1} via={2} target_selected={3} target_pat={4} same={5} container={6} anc={7} crect={8} coff={9} read_err={10} print_btn={11}" -f (Esc $selName), $readback, $modeVia, $targetSel, $targetPat, $sameRid, $containerVia, $ancState, $crect, $coff, $readErr, $printBtn)
+}
+Emit 'report-mode' 'ok' ("via={0} selected={1} same={2} print_btn={3}" -f $modeVia, (Esc $selName), $sameRid, $printBtn)
 
 # ------------------------------------------------------- 2) trigger print
 # Measured 2026-10-19 E2: the entry id is ButtonPrintDocument, and a raw
