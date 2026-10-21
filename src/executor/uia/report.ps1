@@ -68,6 +68,18 @@ function Fail([string]$name, [string]$detail) {
     Emit $name 'fail' $detail
     exit 1
 }
+function Esc([string]$s) {
+    # ASCII-safe rendering for detail payloads (selected tab names are CJK on
+    # this build; PS 5.1 pipes must stay pure ASCII).
+    $sb = New-Object System.Text.StringBuilder
+    foreach ($ch in $s.ToCharArray()) {
+        $c = [int][char]$ch
+        if ($c -lt 32) { [void]$sb.Append(' ') }
+        elseif ($c -lt 127) { [void]$sb.Append($ch) }
+        else { [void]$sb.Append(('\u{0:X4}' -f $c)) }
+    }
+    return $sb.ToString()
+}
 function ById([string]$id, [int]$ms = 5000) {
     $c = New-Object System.Windows.Automation.PropertyCondition(
         [System.Windows.Automation.AutomationElement]::AutomationIdProperty, $id)
@@ -228,7 +240,46 @@ if (-not $acted) {
     } catch { Fail 'report-mode' 'report-entry-neither-invoke-nor-select' }
 }
 Start-Sleep -Milliseconds 1500
-Emit 'report-mode' 'ok' ("via=" + $modeVia)
+# 2026-10-20 second-gun receipt (item5, two runs): SelectionItem.Select()
+# reported ok but the mode bar was still on the calculation tool afterwards,
+# so every Print id scan downstream came back empty
+# (print-entry-not-found-use-PrintMenuId). Read back WHICH tab actually
+# carries the selection before continuing. The gate records what is
+# observable now; WHY Select did not land (no-op vs re-bounced) is the next
+# real-machine round's diagnosis, not a conclusion baked into this file.
+# Accepted name = ResultMode: the measured report tab is
+# Dial.Dialux.InteractionModes.Results.ResultMode on this build. The English
+# 'Report' first pass above would need its pattern added to this gate too if
+# such a build ever shows up -- pending real machine, not guessed now.
+$selName = ''
+$readback = 'no-tabcontrol'
+$tabs2 = ById 'ModeSelectionTabControl' 2500
+if ($tabs2 -ne $null) {
+    $readback = 'no-selected-tab'
+    $tc2 = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+        [System.Windows.Automation.ControlType]::TabItem)
+    $all2 = $tabs2.FindAll([System.Windows.Automation.TreeScope]::Descendants, $tc2)
+    $swSel = [Diagnostics.Stopwatch]::StartNew()
+    while ($swSel.ElapsedMilliseconds -lt 2000) {
+        for ($i2 = 0; $i2 -lt $all2.Count; $i2++) {
+            $isSel = $false
+            try { $isSel = $all2.Item($i2).Current.IsSelected } catch { }
+            if ($isSel) {
+                try { $selName = [string]$all2.Item($i2).Current.Name } catch { $selName = '?unreadable' }
+                $readback = 'selected-tab'
+                break
+            }
+        }
+        if ($selName -ne '') { break }
+        Start-Sleep -Milliseconds 250
+    }
+}
+if ($selName -notmatch 'ResultMode') {
+    # human-readable failure carrying the scene (Esc keeps the pipe ASCII)
+    Fail 'report-mode' ("report-mode-not-confirmed selected='{0}' readback={1} via={2}" -f (Esc $selName), $readback, $modeVia)
+}
+Emit 'report-mode' 'ok' ("via={0} selected={1}" -f $modeVia, (Esc $selName))
 
 # ------------------------------------------------------- 2) trigger print
 # Measured 2026-10-19 E2: the entry id is ButtonPrintDocument, and a raw
