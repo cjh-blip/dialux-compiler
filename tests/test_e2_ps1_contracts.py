@@ -228,7 +228,7 @@ def test_report_ps1_select_confirm_gate_precedes_ok():
     才 Emit ok；假阳性带现场人话失败，且不预设「回切」结论。"""
     t = _src(REPORT_PS1)
     assert "IsSelected" in t, "缺读回选中页签"
-    assert "$selName -notmatch 'ResultMode'" in t, "选中页签名不含 ResultMode 不放行"
+    assert "$selName -match 'ResultMode'" in t, "目标判定仍以选中页签名含 ResultMode 为准（第六批：$selIsTarget 由此置位）"
     assert "report-mode-not-confirmed" in t, "假阳性缺专属人话码"
     assert t.index("report-mode-not-confirmed") < t.index("Emit 'report-mode' 'ok'"), (
         "确认闸必须在 report-mode ok 之前")
@@ -245,6 +245,11 @@ def test_report_ps1_select_confirm_gate_precedes_ok():
     assert "target_pat=" in t, "pattern 路读数必须并联读且进现场"
     assert "anc=" in t, "祖先解析 hit/miss/err 不许再空吞（第四批 catch{} 吞过一次）"
     assert "'null'" in t, "四态记法：空值不得再伪装成 False"
+    # 第六批（第五枪 target_selected=? target_pat=? 野值）：
+    assert "= '?'" not in t, "四态闭集不许有 ? 哨兵（初始值必须是 err，Fail 前必达读）"
+    assert "'?unreadable'" not in t, "selected= 名字字段同口径，不许 ? 前缀"
+    assert "$selIsTarget" in t, "找到选中≠选中是目标：两职责必须分变量（否则重试与证据读被短路）"
+    assert "-not $selIsTarget -and $printBtn -eq 0" in t, "过闸判据必须基于分离后的目标变量"
     fail_line = [ln for ln in t.splitlines() if "report-mode-not-confirmed" in ln][0]
     for word in ("bounce", "revert", "switched-back"):
         assert word not in fail_line.lower(), f"失败码预设了回切结论：{word}"
@@ -263,11 +268,13 @@ def test_ugr_ps1_recalc_completion_waits_for_value_emergence():
 
 
 def test_ugr_ps1_places_point_switching_bottombar_type():
-    """动作内放点路第一层（回执活A 4b/4c 钉死）：aid_NewPointCalculationObject
-    是通用『置入计算元件』——底栏类型不切，点击永远建面、
-    PositionVectorControl 永不出现；切型同样要读回确认。"""
+    """动作内放点路第一层（回执活A 4b/4c 钉死；第六批换轨记档）：
+    第五枪结构普查证实底栏区无同名 ListItem、全窗唯一同名元素＝左栏
+    72×72 图块（rect=123,478，Select 生效、点4/5 经此路建成）——代码
+    路径正确、旧『底栏』措辞已改，**FAIL 码名保留 bottombar 一词**保
+    跨枪信号连续，断言与注释按图块口径。"""
     t = _src(UGR_PS1)
-    assert "ControlType]::ListItem" in t, "底栏条目在 ListItem 层找"
+    assert "ControlType]::ListItem" in t, "元素在 ListItem 层找（实测＝左栏图块）"
     assert "SelectionItemPattern" in t, "类型切换走 SelectionItem"
     assert "bottombar-point-item-not-found" in t, "找不到要带候选现场"
     assert "bottombar-point-not-selected" in t, "切型也要读回（Select 假阳性同病）"
@@ -302,10 +309,14 @@ def test_ugr_ps1_handles_results_invalid_modal():
 
 
 def test_ugr_ps1_expands_position_section():
-    """动作内放点路第二因（4b/4c）：属性面板『定位』栏默认折叠，
-    字段不展开不暴露；展开失败仍有 position-controls 闸兑底带现场。"""
+    """动作内放点路第二因（4b/4c）＋第六批时序修（第五枪反差：码报
+    missing 而跑后现场『定位』栏三字段在场）：展开+读取改带 attempts 的
+    重试循环，失败带 attempts/loc/逐字段现场；选中态不作闸（四/五枪已证
+    不可靠），时序靠 attempts 盖。"""
     t = _src(UGR_PS1)
     assert "0x5B9A" in t and "0x4F4D" in t, "『定位』指纹必须 char 码运行时拼"
     assert "$locName" in t
     assert "ExpandCollapsePattern" in t
     assert "position-controls-missing-after-point" in t, "兑底失败码不许删（信号权威在用）"
+    assert "attempts=" in t, "时序重试必须带次数进现场（分辨时序 vs 结构）"
+    assert "loc=" in t and "x=" in t, "逐字段与展开状态进现场"

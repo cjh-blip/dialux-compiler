@@ -27,6 +27,22 @@ def test_extract_ugr_chinese_and_english():
     assert _extract_ugr("no number here") is None
 
 
+def test_extract_ugr_rejects_out_of_range():
+    """第六批（第五枪 ugr_max=1.0 误锚）：「最大」锚改 finditer 逐候选，
+    区间 [5,50] 外的跳过继续找；兜底一位小数同受区间约束；全部不中→None
+    （未取证优于错值）。样本依回执逐字片段构造，**待 panel_text 原文
+    fixture（第六枪点名回传）替换后再校**。"""
+    # 区间外的「最大」单独出现 → None（旧 search 会直接返回 1.0）
+    assert _extract_ugr("某标签 最大 1.0 其他 1/1") is None
+    # finditer 跳过区间外候选、命中后面真值（不硬编码，只按区间筛）
+    assert _extract_ugr("最大 1.0 …… 最大 29.2") == 29.2
+    # 兜底一位小数被区间拒（1.0/均匀度 0.x 都出不来）
+    assert _extract_ugr("值 1.0") is None
+    assert _extract_ugr("均匀度 0.4 目标 19") is None
+    # 摘要行形态（回执逐字片段）：一位小数首个区间内命中即 RUG 有限值
+    assert _extract_ugr("点2 513 lx |- +29.2 |- 面1 308 lx |0.92 +> 30") == 29.2
+
+
 def test_absorb_read_splits_text_and_params():
     r = UgrResult()
     detail = (
