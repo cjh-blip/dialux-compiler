@@ -240,46 +240,95 @@ if (-not $acted) {
     } catch { Fail 'report-mode' 'report-entry-neither-invoke-nor-select' }
 }
 Start-Sleep -Milliseconds 1500
-# 2026-10-20 second-gun receipt (item5, two runs): SelectionItem.Select()
-# reported ok but the mode bar was still on the calculation tool afterwards,
-# so every Print id scan downstream came back empty
-# (print-entry-not-found-use-PrintMenuId). Read back WHICH tab actually
-# carries the selection before continuing. The gate records what is
-# observable now; WHY Select did not land (no-op vs re-bounced) is the next
-# real-machine round's diagnosis, not a conclusion baked into this file.
-# Accepted name = ResultMode: the measured report tab is
-# Dial.Dialux.InteractionModes.Results.ResultMode on this build. The English
-# 'Report' first pass above would need its pattern added to this gate too if
-# such a build ever shows up -- pending real machine, not guessed now.
+# 2026-10-20 second-gun receipt (item5): Select() reported ok but the mode
+# bar stayed on the calculation tool. 2026-10-21 (third gun) the first gate
+# itself came back twice: report-mode-not-confirmed selected=''
+# readback=no-selected-tab while a human eye saw the calculation tab lit --
+# at readback time NO tab carried a selection AT ALL, so the readback target
+# is as suspect as Select. Same-control rule now:
+#   * resolve THE CONTAINER from $mode itself (its ModeSelectionTabControl
+#     ANCESTOR) so Select and readback can never land on different instances
+#     (ById is only the fallback and gets labelled in the scene);
+#   * ScrollItemIntoView + one Select RETRY (tab index 19 may sit outside
+#     the visible strip -- not proven, the scene will say);
+#   * read the TARGET's own IsSelected (target_selected=) beside the
+#     container scan (readback=), count read exceptions (read_err=), and put
+#     the container rect/offscreen (crect=/coff=) in the scene -- a ghost/
+#     template instance shows up exactly there.
+# WHY Select does not land stays out of this file: the scene decides.
+# Accepted name = ResultMode (measured: Dial.Dialux.InteractionModes.Results
+# .ResultMode); the English 'Report' first pass above would need its pattern
+# added here too if such a build ever shows up -- pending real machine.
 $selName = ''
 $readback = 'no-tabcontrol'
-$tabs2 = ById 'ModeSelectionTabControl' 2500
+$readErr = 0
+$targetSel = '?'
+$sameRid = '-'
+$containerVia = 'none'
+$crect = '-'
+$coff = '-'
+$modeRid = ''
+try { $modeRid = (($mode.Current.RuntimeId) -join '.') } catch { $modeRid = '?' }
+$tcIdCond = New-Object System.Windows.Automation.PropertyCondition(
+    [System.Windows.Automation.AutomationElement]::AutomationIdProperty, 'ModeSelectionTabControl')
+$tabs2 = $null
+$anc = $null
+try { $anc = $mode.FindFirst([System.Windows.Automation.TreeScope]::Ancestors, $tcIdCond) } catch { }
+if ($anc -ne $null) {
+    $tabs2 = $anc
+    $containerVia = 'ancestors'
+} else {
+    $tabs2 = ById 'ModeSelectionTabControl' 2500
+    $containerVia = 'byid'
+}
 if ($tabs2 -ne $null) {
     $readback = 'no-selected-tab'
+    try {
+        $cb = $tabs2.Current.BoundingRectangle
+        $crect = ("{0},{1},{2},{3}" -f [int]$cb.X, [int]$cb.Y, [int]$cb.Width, [int]$cb.Height)
+        $coff = [string]$tabs2.Current.IsOffscreen
+    } catch { $crect = 'unreadable' }
     $tc2 = New-Object System.Windows.Automation.PropertyCondition(
         [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
         [System.Windows.Automation.ControlType]::TabItem)
-    $all2 = $tabs2.FindAll([System.Windows.Automation.TreeScope]::Descendants, $tc2)
-    $swSel = [Diagnostics.Stopwatch]::StartNew()
-    while ($swSel.ElapsedMilliseconds -lt 2000) {
-        for ($i2 = 0; $i2 -lt $all2.Count; $i2++) {
-            $isSel = $false
-            try { $isSel = $all2.Item($i2).Current.IsSelected } catch { }
-            if ($isSel) {
+    $round = 0
+    while ($round -lt 2 -and $selName -eq '') {
+        $round++
+        $all2 = $null
+        try { $all2 = $tabs2.FindAll([System.Windows.Automation.TreeScope]::Descendants, $tc2) } catch { $readback = 'container-stale'; break }
+        $swSel = [Diagnostics.Stopwatch]::StartNew()
+        while ($swSel.ElapsedMilliseconds -lt 1200 -and $selName -eq '') {
+            for ($i2 = 0; $i2 -lt $all2.Count; $i2++) {
+                $isSel = $false
+                try { $isSel = $all2.Item($i2).Current.IsSelected } catch { $readErr++; continue }
+                if (-not $isSel) { continue }
                 try { $selName = [string]$all2.Item($i2).Current.Name } catch { $selName = '?unreadable' }
                 $readback = 'selected-tab'
+                $sRid = ''
+                try { $sRid = (($all2.Item($i2).Current.RuntimeId) -join '.') } catch { }
+                if ($sRid -ne '' -and $sRid -eq $modeRid) { $sameRid = '1' } else { $sameRid = '0' }
                 break
             }
+            if ($selName -ne '') { break }
+            try { $targetSel = [string]$mode.Current.IsSelected } catch { $targetSel = 'err'; $readErr++ }
+            Start-Sleep -Milliseconds 250
         }
-        if ($selName -ne '') { break }
-        Start-Sleep -Milliseconds 250
+        if ($selName -eq '' -and $round -eq 1) {
+            # retry: make the tab visible, Select again, re-scan
+            try { $mode.GetCurrentPattern([System.Windows.Automation.ScrollItemPattern]::Pattern).ScrollItemIntoView() } catch { }
+            try { $mode.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select() } catch { }
+            Start-Sleep -Milliseconds 600
+        }
+    }
+    if ($selName -eq '') {
+        try { $targetSel = [string]$mode.Current.IsSelected } catch { $targetSel = 'err' }
     }
 }
 if ($selName -notmatch 'ResultMode') {
-    # human-readable failure carrying the scene (Esc keeps the pipe ASCII)
-    Fail 'report-mode' ("report-mode-not-confirmed selected='{0}' readback={1} via={2}" -f (Esc $selName), $readback, $modeVia)
+    # human-readable failure carrying the whole scene (Esc keeps the pipe ASCII)
+    Fail 'report-mode' ("report-mode-not-confirmed selected='{0}' readback={1} via={2} target_selected={3} same={4} container={5} crect={6} coff={7} read_err={8}" -f (Esc $selName), $readback, $modeVia, $targetSel, $sameRid, $containerVia, $crect, $coff, $readErr)
 }
-Emit 'report-mode' 'ok' ("via={0} selected={1}" -f $modeVia, (Esc $selName))
+Emit 'report-mode' 'ok' ("via={0} selected={1} same={2}" -f $modeVia, (Esc $selName), $sameRid)
 
 # ------------------------------------------------------- 2) trigger print
 # Measured 2026-10-19 E2: the entry id is ButtonPrintDocument, and a raw
