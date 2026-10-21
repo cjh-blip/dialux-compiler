@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from src.executor.uia.driver import StepEvent
 from src.executor.uia.ugr import UgrResult, _absorb_read, _extract_ugr, _unescape
@@ -28,10 +29,9 @@ def test_extract_ugr_chinese_and_english():
 
 
 def test_extract_ugr_rejects_out_of_range():
-    """第六批（第五枪 ugr_max=1.0 误锚）：「最大」锚改 finditer 逐候选，
-    区间 [5,50] 外的跳过继续找；兜底一位小数同受区间约束；全部不中→None
-    （未取证优于错值）。样本依回执逐字片段构造，**待 panel_text 原文
-    fixture（第六枪点名回传）替换后再校**。"""
+    """第六批（第五枪 ugr_max=1.0 误锚）：区间 [5,50] 护栏。
+    **原文 fixture 已在第七批落袋并锁死**（见下一条），本组构造样本
+    继续保留作回归。"""
     # 区间外的「最大」单独出现 → None（旧 search 会直接返回 1.0）
     assert _extract_ugr("某标签 最大 1.0 其他 1/1") is None
     # finditer 跳过区间外候选、命中后面真值（不硬编码，只按区间筛）
@@ -41,6 +41,23 @@ def test_extract_ugr_rejects_out_of_range():
     assert _extract_ugr("均匀度 0.4 目标 19") is None
     # 摘要行形态（回执逐字片段）：一位小数首个区间内命中即 RUG 有限值
     assert _extract_ugr("点2 513 lx |- +29.2 |- 面1 308 lx |0.92 +> 30") == 29.2
+
+
+def test_extract_ugr_fixture_e5_p5():
+    """第七批主测：第六枪回传的原文 fixture（panel_text 可读版逐字，
+    2,212B）锁死正向抽取——
+    - **期望 29.3**（全部有限 RUG 29.2/29.3/28.9 取 max，统筹口径）；
+    - 表头段（`最大 | 1/1` 与列名组）结构排除，旧实现在此得 1.0；
+    - `> 30` 饱和、均匀度两位小数、`0.000 m` 参数均不得入候选。
+    """
+    fix = Path(__file__).parent / "fixtures" / "e5_p5_panel_text.txt"
+    text = fix.read_text(encoding="utf-8").strip()
+    assert _extract_ugr(text) == 29.3
+    # 表头段单独出现 → None（结构排除：页码记号 1/1 邻域）
+    header = "计算面 | (直角照度) | 实际 | 目标 | 平均 | 最小 | 1/1 | 最大 | 1/1"
+    assert _extract_ugr(header) is None
+    # 目标值排除（结构词紧邻）：旧形态 19.0 不得混入
+    assert _extract_ugr("计算点 1 (RUG) 最大 16.2 目标 <= 19.0") == 16.2
 
 
 def test_absorb_read_splits_text_and_params():

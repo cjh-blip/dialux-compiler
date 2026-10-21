@@ -65,25 +65,47 @@ def _unescape(text: str) -> str:
     return _ESC_RE.sub(lambda m: chr(int(m.group(1), 16)), text)
 
 
-def _extract_ugr(text: str) -> Optional[float]:
-    """从面板文本里抽最大 UGR 值（区间护栏版，2026-10-21 第六批）。
+# 结构排除（2026-10-21 第七批，第六枪原文 fixture `tests/fixtures/
+# e5_p5_panel_text.txt` 锁死）：上枪 ugr_max=1.0 的精确路径＝表头段
+# `… | 最小 | 1/1 | 最大 | 1/1 | …` 被 _MAX_RE 从「最大」后吸走 `1`。
+# 排除全用结构记号（页码记号 1/1、列名组 实际/目标/平均/最小、
+# target 词），**不含任何实测数值**；目标值（`目标 <= 19.0`）按
+# 「值紧邻结构词」排除。哨兵：1/1 窗口 ±24/8，列名紧邻前缀。
+_HDR_PAGE = "1/1"
+_VALUE_BARRIER = re.compile(r"(实际|目标|平均|最小|[Tt]arget)\s*(?:[<>≤≥]=?\s*)?$")
 
-    第五枪实测 ``ugr_max=1.0``：旧实现对「最大」锚只 ``search`` 第一个
-    命中，8 字符窗内吸进了非眩光标签值；兜底一位小数也未设区间。
-    现：锚改 ``finditer`` 逐个候选，取第一个落在 ``[_UGR_MIN, _UGR_MAX]``
-    内的；兜底同受区间约束；全部不中返回 None（未取证优于错值）。
-    （构造样本依据回执逐字片段，原文 fixture 待第六枪回传后替换校验。）
+
+def _structurally_excluded(text: str, val_start: int) -> bool:
+    """该候选值位置是否落在表头段/目标值语境（结构判定，不碰数值）。"""
+    lo = max(0, val_start - 24)
+    if _HDR_PAGE in text[lo:val_start + 8]:
+        return True
+    return _VALUE_BARRIER.search(text[lo:val_start]) is not None
+
+
+def _extract_ugr(text: str) -> Optional[float]:
+    """从面板文本抽 UGR/RUG：双路候选 → 结构排除 → 区间 → **取 max**。
+
+    第七批（第六枪原文 fixture 落袋后）：
+    - 新形态（结果监控平铺文本）：RUG 有限值以裸“一位小数”出现在
+      ResultMonitorItem 序列（29.2/29.3/28.9；均匀度恒两位小数、
+      饱和行 `> 30` 无小数、页码 `1/1` 无小数——均由结构区分）；
+    - 旧形态（10-08 报表/面板）：`最大 16.2` / `Maximum 12.7` 锚保留；
+    - **ugr_max = 全部有限候选的 max（本样本＝29.3）**，区间 [5,50]
+      照第六批口径，全不中返回 None（未取证优于错值）；
+    - 表头段与目标值由 ``_structurally_excluded`` 挡在候选外。
     """
+    cands = []
     for m in _MAX_RE.finditer(text):
-        v = float(m.group(1))
-        if _UGR_MIN <= v <= _UGR_MAX:
-            return v
-    m = _NUM_RE.search(text)
-    if m:
-        v = float(m.group(1))
-        if _UGR_MIN <= v <= _UGR_MAX:
-            return v
-    return None
+        if _structurally_excluded(text, m.start(1)):
+            continue
+        cands.append(float(m.group(1)))
+    for m in _NUM_RE.finditer(text):
+        if _structurally_excluded(text, m.start(1)):
+            continue
+        cands.append(float(m.group(1)))
+    vals = [v for v in cands if _UGR_MIN <= v <= _UGR_MAX]
+    return max(vals) if vals else None
 
 
 @dataclass

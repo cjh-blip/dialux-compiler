@@ -447,9 +447,16 @@ if ($haveCoords) {
             try { $ecp.Expand(); $locSeen = 'hit'; Start-Sleep -Milliseconds 400 } catch { }
             break
         }
-        $xEl = ById 'PositionVectorControl_X' 1200
-        $yEl = ById 'PositionVectorControl_Y' 1200
-        $zEl = ById 'PositionVectorControl_Z' 1200
+        # Sixth-gun probe (e6_2\pos_probe.txt): the real fields are
+        # Positioning_X/Y/Z -- aid 'PositionVectorControl_*' hit 0 across all
+        # 673 descendants, and Positioning_* read back val 9.045/8.050/0.700
+        # on the live scene. Old names are gone from the code path; FAIL
+        # strings keep their historical wording for signal continuity.
+        # (furniture.ps1 still carries the old ids -- out of this batch's
+        # scope, flagged in the receipt reply.)
+        $xEl = ById 'Positioning_X' 1200
+        $yEl = ById 'Positioning_Y' 1200
+        $zEl = ById 'Positioning_Z' 1200
         if ($xEl -ne $null -and $yEl -ne $null -and $zEl -ne $null) { break }
         if ($att -lt $attempts) { Start-Sleep -Milliseconds 1200 }
     }
