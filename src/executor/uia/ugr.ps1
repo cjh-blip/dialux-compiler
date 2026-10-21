@@ -353,9 +353,24 @@ if ($haveCoords) {
         if ($fresh -eq $null) {
             $readStat = 'stale'
         } else {
-            $isSel = $false
-            try { $isSel = $fresh.Current.IsSelected; $readStat = [string]$isSel } catch { $readErr++; $readStat = 'read-err' }
-            if ($isSel) { $typeOk = $true; break }
+            # 2026-10-21 fifth batch (fourth-gun evidence: rid=''/read=''/
+            # err=0 at the source -- the provider returned null, and a null
+            # read as [string] looked like an empty, i.e. never-True, answer).
+            # Read BOTH paths -- property and pattern -- score each as
+            # 1/0/null/err, accept EITHER as True. An empty answer can no
+            # longer masquerade as False; both scores go into the scene.
+            $a1 = 'err'
+            try {
+                $v1 = $fresh.Current.IsSelected
+                if ($null -eq $v1) { $a1 = 'null' } elseif ($v1) { $a1 = '1' } else { $a1 = '0' }
+            } catch { $readErr++ }
+            $a2 = 'err'
+            try {
+                $v2 = $fresh.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Current.IsSelected
+                if ($null -eq $v2) { $a2 = 'null' } elseif ($v2) { $a2 = '1' } else { $a2 = '0' }
+            } catch { $a2 = 'err' }
+            $readStat = "$a1/$a2"
+            if ($a1 -eq '1' -or $a2 -eq '1') { $typeOk = $true; break }
         }
         Start-Sleep -Milliseconds 250
     }
