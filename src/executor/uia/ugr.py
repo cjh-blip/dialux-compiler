@@ -44,8 +44,15 @@ _UGR_STEPS = {
 _ESC_RE = re.compile(r"\\u([0-9A-Fa-f]{4})")
 # 面板文本里取「最大值」：中文「最大 16.2」/ 英文 "Maximum 16.2"
 _MAX_RE = re.compile(r"(?:最大|Maximum)\D{0,8}?(\d+(?:\.\d+)?)", re.IGNORECASE)
-# 兜底：UGR 值域 10~30，取文本里第一个一位整数+小数形式
+# 兜底：取文本里第一个一位整数+小数形式（同受下方区间护栏约束）
 _NUM_RE = re.compile(r"\b(\d{1,2}\.\d)\b")
+# 合理区间护栏（2026-10-21 第六批，第五枪 ugr_max=1.0 误锚后定）：
+#   下限 5：拦『最大』锚误中标签值（1.0 实测在案）与均匀度类 0.x 读数；
+#   四枪实测有限 RUG 为 12.7/16.2/29.2/29.3/28.9，全在 5 以上；
+#   上限 50：按统筹口径；>30 饱和在面板里是 `> 30` 文本，本就不进抽取。
+#   区间外→跳过继续找，全部不中→None（未取证优于错值）。
+#   ※不硬编码任何实测值；待 panel_text 原文 fixture 回传后再校。
+_UGR_MIN, _UGR_MAX = 5.0, 50.0
 # ugr-read 的 detail 尾部：target=19.0 step=15 from=0 to=360
 _TAIL_RE = re.compile(
     r"target=(?P<target>-?\d+(?:\.\d+)?)\s+step=(?P<step>-?\d+(?:\.\d+)?)"
@@ -59,12 +66,24 @@ def _unescape(text: str) -> str:
 
 
 def _extract_ugr(text: str) -> Optional[float]:
-    """从面板文本里抽最大 UGR 值。"""
-    m = _MAX_RE.search(text)
-    if m:
-        return float(m.group(1))
+    """从面板文本里抽最大 UGR 值（区间护栏版，2026-10-21 第六批）。
+
+    第五枪实测 ``ugr_max=1.0``：旧实现对「最大」锚只 ``search`` 第一个
+    命中，8 字符窗内吸进了非眩光标签值；兜底一位小数也未设区间。
+    现：锚改 ``finditer`` 逐个候选，取第一个落在 ``[_UGR_MIN, _UGR_MAX]``
+    内的；兜底同受区间约束；全部不中返回 None（未取证优于错值）。
+    （构造样本依据回执逐字片段，原文 fixture 待第六枪回传后替换校验。）
+    """
+    for m in _MAX_RE.finditer(text):
+        v = float(m.group(1))
+        if _UGR_MIN <= v <= _UGR_MAX:
+            return v
     m = _NUM_RE.search(text)
-    return float(m.group(1)) if m else None
+    if m:
+        v = float(m.group(1))
+        if _UGR_MIN <= v <= _UGR_MAX:
+            return v
+    return None
 
 
 @dataclass

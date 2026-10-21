@@ -270,7 +270,21 @@ Emit 'ugr-tool' 'ok'
 # ------------------------------------------------------- 2) calculation point
 $haveCoords = ($PointX -ne '' -and $PointY -ne '' -and $PointZ -ne '')
 if ($haveCoords) {
-    # ---- layer 1: bottom-bar object type must be POINT before placing.
+    # ---- layer 1: the placement-object type must be POINT.
+    # 2026-10-21 structure census (fifth gun, point3) SETTLES where this
+    # lives: there is NO 'calculation point' ListItem in any bottom bar --
+    # the ONLY element in the whole window named exactly like this is the
+    # 72x72 tile of the left 'active calculation object' column at
+    # rect=123,478 (ListItem + SelectionItemPattern, measured IsSelected=1
+    # after Select). The exact-name match below lands on THAT tile by
+    # itself, Select takes effect there, and guns 4/5 placed points 4/5
+    # through this path -- the code path is right, the old 'bottom bar'
+    # wording was wrong about WHERE. FAIL-code strings keep the 'bottombar'
+    # word for cross-receipt signal continuity; comments/rect expectations/
+    # assertions now say left-column tile.
+    # (Still true from earlier evidence: aid_NewPointCalculationObject is a
+    # generic 'place calculation element' button (rect 81,218 286x34); with
+    # the type left on SURFACE every Invoke+click created a SURFACE.)
     # 2026-10-20 second-gun receipt (4b/4c, three-layer evidence):
     # aid_NewPointCalculationObject is a GENERIC 'place calculation element'
     # button (rect 81,218 286x34) -- with the bar still on SURFACE every
@@ -303,7 +317,7 @@ if ($haveCoords) {
         try { $nm = [string]$li.Current.Name } catch { }
         if ($nm -eq $ptName) { $ptItem = $li; break }
         if ($nm -ne '') {
-            $rxs = '?'
+            $rxs = 'err'
             try { $rbx = $li.Current.BoundingRectangle; $rxs = ("{0},{1}" -f [int]$rbx.X, [int]$rbx.Y) } catch { }
             $barCand += ("{0}@{1}" -f $nm, $rxs)
         }
@@ -331,8 +345,8 @@ if ($haveCoords) {
     $readStat = 'unmatched'
     $readErr = 0
     $ptRid = ''
-    try { $ptRid = (($ptItem.Current.RuntimeId) -join '.') } catch { $ptRid = '?' }
-    $ptRect = '?'
+    try { $ptRid = (($ptItem.Current.RuntimeId) -join '.') } catch { $ptRid = 'err' }
+    $ptRect = 'err'
     try { $rb0 = $ptItem.Current.BoundingRectangle; $ptRect = ("{0},{1}" -f [int]$rb0.X, [int]$rb0.Y) } catch { }
     $swT = [Diagnostics.Stopwatch]::StartNew()
     while ($swT.ElapsedMilliseconds -lt 2000) {
@@ -402,32 +416,50 @@ if ($haveCoords) {
     # ...and it can also raise off the click itself; bounded check, then move
     # on -- the position-fields gate below still reports a swallowed click.
     if ((Confirm-ResultInvalidModal 1500) -eq 'confirmed') { $modalVia = 'confirmed-after-click' }
-    # ---- layer 4: the property panel's position section is COLLAPSED by
-    # default (second cause in 4b/4c) and the PositionVectorControl fields
-    # only enter the tree once it is expanded. Section name is Chinese ->
-    # char codes at runtime. Best effort: if it never expands, the
-    # position-controls gate below still fails with its own scene.
+    # ---- layer 4 (sixth batch, fifth-gun timing evidence): the fields were
+    # ABSENT at read time yet visible seconds later in the same panel -- the
+    # property panel switches to the new point and re-folds its accordion
+    # AFTER the click settles, so one early read is a coin flip. Loop:
+    # expand the 'position' section, rescan the three fields, retry with a
+    # delay; every attempt is reported (attempts=/loc=/x=/y=/z=) so a
+    # structural miss (renamed ids) separates cleanly from timing. Selection
+    # state is deliberately NOT used as a gate (its reads proved unreliable
+    # across guns 4/5) -- timing is covered by attempts; if attempts
+    # exhaust while the scene still shows the section late, next round
+    # adds a selection-evidence field. Expand is best effort per attempt.
     $locName = -join ([char[]]@(0x5B9A, 0x4F4D))   # 'position'
-    $allEls = $main.FindAll([System.Windows.Automation.TreeScope]::Descendants,
-                            [System.Windows.Automation.Condition]::TrueCondition)
-    for ($i = 0; $i -lt $allEls.Count; $i++) {
-        $sec = $allEls.Item($i)
-        $nm = ''
-        try { $nm = [string]$sec.Current.Name } catch { }
-        if ($nm.IndexOf($locName) -lt 0) { continue }
-        $ecp = $null
-        try { $ecp = $sec.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern) } catch { }
-        if ($ecp -eq $null) { continue }
-        try { $ecp.Expand(); Start-Sleep -Milliseconds 400 } catch { }
-        break
+    $xEl = $null
+    $yEl = $null
+    $zEl = $null
+    $locSeen = 'miss'
+    $attempts = 4
+    for ($att = 1; $att -le $attempts; $att++) {
+        $allEls = $main.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+                                [System.Windows.Automation.Condition]::TrueCondition)
+        for ($i = 0; $i -lt $allEls.Count; $i++) {
+            $sec = $allEls.Item($i)
+            $nm = ''
+            try { $nm = [string]$sec.Current.Name } catch { }
+            if ($nm.IndexOf($locName) -lt 0) { continue }
+            $ecp = $null
+            try { $ecp = $sec.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern) } catch { }
+            if ($ecp -eq $null) { continue }
+            try { $ecp.Expand(); $locSeen = 'hit'; Start-Sleep -Milliseconds 400 } catch { }
+            break
+        }
+        $xEl = ById 'PositionVectorControl_X' 1200
+        $yEl = ById 'PositionVectorControl_Y' 1200
+        $zEl = ById 'PositionVectorControl_Z' 1200
+        if ($xEl -ne $null -and $yEl -ne $null -and $zEl -ne $null) { break }
+        if ($att -lt $attempts) { Start-Sleep -Milliseconds 1200 }
     }
     # Drawing the point only creates/selects it; exact world coordinates are
     # written through the numeric fields that appear afterwards.
-    $xEl = ById 'PositionVectorControl_X' 3000
-    $yEl = ById 'PositionVectorControl_Y' 3000
-    $zEl = ById 'PositionVectorControl_Z' 3000
+    $xf = 0; if ($xEl -ne $null) { $xf = 1 }
+    $yf = 0; if ($yEl -ne $null) { $yf = 1 }
+    $zf = 0; if ($zEl -ne $null) { $zf = 1 }
     if ($xEl -eq $null -or $yEl -eq $null -or $zEl -eq $null) {
-        Fail 'ugr-point' 'position-controls-missing-after-point'
+        Fail 'ugr-point' ("position-controls-missing-after-point attempts={0} loc={1} x={2} y={3} z={4}" -f $attempts, $locSeen, $xf, $yf, $zf)
     }
     try {
         Set-Val $xEl $PointX

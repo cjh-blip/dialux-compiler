@@ -260,17 +260,25 @@ Start-Sleep -Milliseconds 1500
 # .ResultMode); the English 'Report' first pass above would need its pattern
 # added here too if such a build ever shows up -- pending real machine.
 $selName = ''
+$selIsTarget = $false
 $readback = 'no-tabcontrol'
 $readErr = 0
-$targetSel = '?'
-$targetPat = '?'
+# Sixth batch (fifth-gun evidence `target_selected=? target_pat=?`): '?' was
+# an INITIAL value that survived whenever a non-target tab was found first
+# -- $selName did double duty ('some tab selected' vs 'it is the target')
+# and the short-circuit skipped both the target reads and the retry. Now:
+# initial = 'err' (four-state closed set 1|0|null|err, no fifth sentinel),
+# target reads are UNCONDITIONAL before Fail, and the loop/retry predicate
+# is $selIsTarget -- a found-but-wrong tab keeps the retry alive.
+$targetSel = 'err'
+$targetPat = 'err'
 $sameRid = '-'
 $containerVia = 'none'
 $ancState = 'miss'
 $crect = '-'
 $coff = '-'
 $modeRid = ''
-try { $modeRid = (($mode.Current.RuntimeId) -join '.') } catch { $modeRid = '?' }
+try { $modeRid = (($mode.Current.RuntimeId) -join '.') } catch { $modeRid = 'err' }
 # 2026-10-21 fifth batch (fourth-gun evidence): the provider returned NULL
 # for IsSelected and an empty RuntimeId on these elements (err=0, not an
 # exception) -- so every single-path read that assumed a True/False answer
@@ -309,12 +317,12 @@ if ($tabs2 -ne $null) {
         [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
         [System.Windows.Automation.ControlType]::TabItem)
     $round = 0
-    while ($round -lt 2 -and $selName -eq '') {
+    while ($round -lt 2 -and -not $selIsTarget) {
         $round++
         $all2 = $null
         try { $all2 = $tabs2.FindAll([System.Windows.Automation.TreeScope]::Descendants, $tc2) } catch { $readback = 'container-stale'; break }
         $swSel = [Diagnostics.Stopwatch]::StartNew()
-        while ($swSel.ElapsedMilliseconds -lt 1200 -and $selName -eq '') {
+        while ($swSel.ElapsedMilliseconds -lt 1200 -and -not $selIsTarget) {
             for ($i2 = 0; $i2 -lt $all2.Count; $i2++) {
                 $s1 = 'err'
                 try {
@@ -327,55 +335,49 @@ if ($tabs2 -ne $null) {
                     if ($null -eq $v2) { $s2 = 'null' } elseif ($v2) { $s2 = '1' } else { $s2 = '0' }
                 } catch { $readErr++ }
                 if ($s1 -ne '1' -and $s2 -ne '1') { continue }
-                try { $selName = [string]$all2.Item($i2).Current.Name } catch { $selName = '?unreadable' }
+                # a selected tab exists -- record it (wrong name stays as scene)
+                try { $selName = [string]$all2.Item($i2).Current.Name } catch { $selName = 'unreadable' }
                 $readback = 'selected-tab'
                 $sRid = ''
                 try { $sRid = (($all2.Item($i2).Current.RuntimeId) -join '.') } catch { }
                 if ($sRid -ne '' -and $sRid -eq $modeRid) { $sameRid = '1' } else { $sameRid = '0' }
+                if ($selName -match 'ResultMode') { $selIsTarget = $true }
                 break
             }
-            if ($selName -ne '') { break }
-            try {
-                $tv = $mode.Current.IsSelected
-                if ($null -eq $tv) { $targetSel = 'null' } elseif ($tv) { $targetSel = '1' } else { $targetSel = '0' }
-            } catch { $targetSel = 'err'; $readErr++ }
-            try {
-                $tpv = $mode.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Current.IsSelected
-                if ($null -eq $tpv) { $targetPat = 'null' } elseif ($tpv) { $targetPat = '1' } else { $targetPat = '0' }
-            } catch { $targetPat = 'err' }
+            if ($selIsTarget) { break }
             Start-Sleep -Milliseconds 250
         }
-        if ($selName -eq '' -and $round -eq 1) {
+        if (-not $selIsTarget -and $round -eq 1) {
             # retry: make the tab visible, Select again, re-scan
             try { $mode.GetCurrentPattern([System.Windows.Automation.ScrollItemPattern]::Pattern).ScrollItemIntoView() } catch { }
             try { $mode.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select() } catch { }
             Start-Sleep -Milliseconds 600
         }
     }
-    if ($selName -eq '') {
-        try {
-            $tv = $mode.Current.IsSelected
-            if ($null -eq $tv) { $targetSel = 'null' } elseif ($tv) { $targetSel = '1' } else { $targetSel = '0' }
-        } catch { $targetSel = 'err' }
-        try {
-            $tpv = $mode.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Current.IsSelected
-            if ($null -eq $tpv) { $targetPat = 'null' } elseif ($tpv) { $targetPat = '1' } else { $targetPat = '0' }
-        } catch { $targetPat = 'err' }
-    }
+    # UNCONDITIONAL target reads (fifth-gun '?' never again): the evidence
+    # pair is collected whatever the container scan found.
+    try {
+        $tv = $mode.Current.IsSelected
+        if ($null -eq $tv) { $targetSel = 'null' } elseif ($tv) { $targetSel = '1' } else { $targetSel = '0' }
+    } catch { $targetSel = 'err'; $readErr++ }
+    try {
+        $tpv = $mode.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Current.IsSelected
+        if ($null -eq $tpv) { $targetPat = 'null' } elseif ($tpv) { $targetPat = '1' } else { $targetPat = '0' }
+    } catch { $targetPat = 'err' }
 }
 # Functional second way through: the print button lives ONLY on the report
 # page (see block comment above). Checked when the tab-name way failed (2s)
 # and recorded on every outcome (500ms on the tab-name way) so the two ways
 # can be cross-checked in the next receipt.
 $printBtn = 0
-if ($selName -notmatch 'ResultMode') {
+if (-not $selIsTarget) {
     $pe = ById 'ButtonPrintDocument' 2000
     if ($pe -ne $null) { $printBtn = 1 }
 } else {
     $pe = ById 'ButtonPrintDocument' 500
     if ($pe -ne $null) { $printBtn = 1 }
 }
-if ($selName -notmatch 'ResultMode' -and $printBtn -eq 0) {
+if (-not $selIsTarget -and $printBtn -eq 0) {
     # human-readable failure carrying the whole scene (Esc keeps the pipe ASCII)
     Fail 'report-mode' ("report-mode-not-confirmed selected='{0}' readback={1} via={2} target_selected={3} target_pat={4} same={5} container={6} anc={7} crect={8} coff={9} read_err={10} print_btn={11}" -f (Esc $selName), $readback, $modeVia, $targetSel, $targetPat, $sameRid, $containerVia, $ancState, $crect, $coff, $readErr, $printBtn)
 }
