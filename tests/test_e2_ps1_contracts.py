@@ -59,6 +59,7 @@ def test_report_py_flags_are_all_declared_as_ps1_params():
         "-PdfPath", "-ProcessName", "-WaitTimeoutMs",
         "-ReportMenuId", "-ReportTabIndex", "-PrintMenuId",
         "-PrinterComboId", "-SaveButtonId", "-FileNameId",
+        "-BreadCrumbPath",
     }
     for flag in expected:
         assert f'"{flag}"' in py, f"report.py 不再发送 {flag}"

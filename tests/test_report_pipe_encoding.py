@@ -75,11 +75,17 @@ def test_real_subprocess_bytes_decode_readable():
 
 
 def test_report_py_reads_stdout_as_bytes_through_decoder():
-    """结构：读循环按字节行过解码器、stderr 同口径、盲读口径移除。"""
+    """结构：读循环按字节行过解码器、盲读口径移除；stderr 自第十三批起
+    改为实时沉到文件（件2②：盲区是“只在 stdout EOF 后才读+壳超时丢弃”），
+    断言随行为更新：stderr 不再是 PIPE。"""
     src = REPORT_PY.read_text(encoding="utf-8")
     assert "_decode_pipe(raw_line)" in src, "stdout 读循环必须按字节行过解码器"
-    assert "_decode_pipe(proc.stderr.read())" in src, "stderr 同口径"
-    assert 'encoding="utf-8"' not in src, "盲读口径必须已移除"
+    assert "stderr=subprocess.PIPE" not in src, "stderr 禁再回管道（只读于 EOF 后的旧盲区）"
+    assert "stderr=sf" in src and "_ps1_stderr.log" in src, "stderr 实时落盘文件"
+    # 盲读参数的负断言只靶 Popen 调用块（read_text 的显式 encoding 是正确用法）
+    pz = src[src.index("subprocess.Popen("):]
+    pz = pz[: pz.index("except OSError")]
+    assert "encoding=" not in pz and "text=" not in pz, "Popen 盲读参数必须已移除"
     assert "text=True" not in src
     assert "bufsize=1" not in src
 
