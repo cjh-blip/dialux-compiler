@@ -102,6 +102,7 @@
 ### 3. 错误处理
 - **裸异常禁止直接抛给用户**：外部 API/子进程/DIALux 弹窗错误应翻译成"中文 + 可行动作"，参考 Mrite 的 `normalizeTaskErrorMessage`。
 - **编码问题（GBK vs UTF-8）**：Windows 中文环境下子进程输出、文件读写必须显式声明 `encoding="utf-8", errors="replace"`，这是 test_smoke 编码 bug 的教训。
+  - **2026-10-22 第十批修正补充（第九枪 ui= 损耗实证）**：PowerShell 5.1 向重定向管道写的非 ASCII 字节按**机器 OEM 码表**（中文机＝GBK/cp936），对这种管道盲读 utf-8+replace 会把中文现场变成 U+FFFD（EF BF BD）。report 链改法＝ps1 头部显式声明 `[Console]::OutputEncoding=UTF8` ＋ python 二进制读行走 `_decode_pipe`（utf-8 先、gbk 兜底）；断言见 `tests/test_report_pipe_encoding.py`。其余 runner（ugr/driver/luminaire/furniture 等）仍是旧盲读口径，同病未修、待样本触发再跟进。
 - **None/空值必须有兜底**：`KeyMouseExecutor._locate_control` 这类控件定位函数，找不到时要么返回明确的 `None` 让上层走降级，要么抛明确异常，不能静默失败。
 
 ### 4. 风格与可维护（ruff 不放宽）

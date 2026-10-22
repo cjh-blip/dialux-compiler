@@ -37,6 +37,16 @@ Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 Add-Type -AssemblyName WindowsBase    # System.Windows.Point for ElementFromPoint scan (eighth batch)
 
+# Tenth batch -- encoding layer only, no field semantics touched. PS 5.1
+# writes redirected stdout with the machine OEM code page (zh-CN = GBK) while
+# python read it as UTF-8 + errors=replace, which turned the ninth shot's ui=
+# Chinese scene into U+FFFD on the pipe. Declare this process's output
+# encoding as UTF-8 so both ends agree; the python side additionally reads
+# GBK bytes, so the scene survives either way (asserted in
+# tests/test_report_pipe_encoding.py). Best effort: if the host refuses the
+# change (no console), the decoder fallback still covers the real machine.
+try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { }
+
 if (-not ([System.Management.Automation.PSTypeName]'RP.U').Type) {
 Add-Type @"
 using System;
@@ -57,6 +67,170 @@ namespace RP {
     [DllImport("user32.dll", CharSet=CharSet.Auto)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int max);
     [DllImport("user32.dll", CharSet=CharSet.Auto)] public static extern bool SetWindowText(IntPtr h, string t);
     [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h, int m, IntPtr w, IntPtr l);
+    // ---- tenth batch (9th shot 2026-10-22): Win32 printer-list channel. The
+    // ---- print dialog's UIA FolderView pane reports ZERO named children (two
+    // ---- samples 6s apart), so classification and selection move to window
+    // ---- messages; E2 (2026-10-19) read this dialog's list via Win32.
+    public delegate bool EnumProc(IntPtr h, IntPtr l);
+    [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr p, EnumProc cb, IntPtr l);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassNameW(IntPtr h, StringBuilder s, int max);
+    [DllImport("user32.dll")] public static extern int GetDlgCtrlID(IntPtr h);
+    [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr h);
+    [StructLayout(LayoutKind.Sequential)] public struct PT { public int X; public int Y; }
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct LVITEMW {
+      public int mask; public int iItem; public int iSubItem;
+      public uint state; public uint stateMask;
+      public IntPtr pszText; public int cchTextMax; public int iImage; public IntPtr lParam;
+    }
+    [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref PT p);
+    [DllImport("winspool.drv", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern bool GetDefaultPrinterW(StringBuilder s, ref int n);
+
+    // "hwnd|class|text" per child (recursive): the scene that travels back
+    // in failures when nothing in the dialog can be classified.
+    public static string[] ChildScene(IntPtr p) {
+      System.Collections.Generic.List<string> rows = new System.Collections.Generic.List<string>();
+      EnumChildWindows(p, delegate(IntPtr h, IntPtr l) {
+        StringBuilder cls = new StringBuilder(256);
+        GetClassNameW(h, cls, 256);
+        StringBuilder txt = new StringBuilder(512);
+        GetWindowText(h, txt, 512);
+        rows.Add(((long)h).ToString() + "|" + cls.ToString() + "|" + txt.ToString());
+        return true;
+      }, IntPtr.Zero);
+      return rows.ToArray();
+    }
+    // Read-only default-printer query (winspool). This query is the whole
+    // allowance: never a system-setting write -- the printer is chosen
+    // in-dialog only, per the boundary from the task order.
+    public static string GetDefaultPrinterName() {
+      StringBuilder sb = new StringBuilder(256);
+      int n = 256;
+      if (GetDefaultPrinterW(sb, ref n)) return sb.ToString();
+      if (n <= 256) return "";
+      StringBuilder big = new StringBuilder(n + 1);
+      return GetDefaultPrinterW(big, ref n) ? big.ToString() : "";
+    }
+    public static string DlgItemText(IntPtr h, int id) {
+      IntPtr c = GetDlgItem(h, id);
+      if (c == IntPtr.Zero) return "";
+      StringBuilder sb = new StringBuilder(256);
+      GetWindowText(c, sb, 256);
+      return sb.ToString();
+    }
+    // List channel of one candidate control: ComboBox / ListBox /
+    // SysListView32 (a shell FolderView hides its list this way). Unknown
+    // messages answer 0, so probing arbitrary children is harmless.
+    public static string ListChannel(IntPtr h) {
+      if ((long)SendMessage(h, 0x0146, IntPtr.Zero, IntPtr.Zero) > 0) return "cb";   // CB_GETCOUNT
+      if ((long)SendMessage(h, 0x018B, IntPtr.Zero, IntPtr.Zero) > 0) return "lb";   // LB_GETCOUNT
+      if ((long)SendMessage(h, 0x1004, IntPtr.Zero, IntPtr.Zero) > 0) return "lv";   // LVM_GETITEMCOUNT
+      return "";
+    }
+    private static string ListItemByChannel(IntPtr h, string ch, int i) {
+      if (ch == "lv") {
+        IntPtr buf = Marshal.AllocHGlobal(1024);
+        IntPtr p = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(LVITEMW)));
+        try {
+          Marshal.Copy(new byte[1024], 0, buf, 1024);
+          LVITEMW it = new LVITEMW();
+          it.mask = 1; it.iItem = i; it.iSubItem = 0;
+          it.pszText = buf; it.cchTextMax = 511;
+          Marshal.StructureToPtr(it, p, false);
+          SendMessage(h, 0x1073, IntPtr.Zero, p);            // LVM_GETITEMTEXTW
+          return Marshal.PtrToStringUni(buf) ?? "";
+        } finally { Marshal.FreeHGlobal(p); Marshal.FreeHGlobal(buf); }
+      }
+      IntPtr b = Marshal.AllocHGlobal(1024);
+      try {
+        Marshal.Copy(new byte[1024], 0, b, 1024);
+        if (ch == "cb") SendMessage(h, 0x0148, (IntPtr)i, b); // CB_GETLBTEXT
+        else SendMessage(h, 0x0189, (IntPtr)i, b);            // LB_GETTEXT
+        return Marshal.PtrToStringUni(b) ?? "";
+      } finally { Marshal.FreeHGlobal(b); }
+    }
+    public static string[] ListRead(IntPtr h, string ch) {
+      int n = 0;
+      if (ch == "cb") n = (int)(long)SendMessage(h, 0x0146, IntPtr.Zero, IntPtr.Zero);
+      else if (ch == "lb") n = (int)(long)SendMessage(h, 0x018B, IntPtr.Zero, IntPtr.Zero);
+      else if (ch == "lv") n = (int)(long)SendMessage(h, 0x1004, IntPtr.Zero, IntPtr.Zero);
+      if (n < 0) n = 0;
+      if (n > 64) n = 64;
+      string[] items = new string[n];
+      for (int i = 0; i < n; i++) items[i] = ListItemByChannel(h, ch, i);
+      return items;
+    }
+    public static int ListSelIndex(IntPtr h, string ch) {
+      if (ch == "cb") return (int)(long)SendMessage(h, 0x0147, IntPtr.Zero, IntPtr.Zero);   // CB_GETCURSEL
+      if (ch == "lb") return (int)(long)SendMessage(h, 0x0188, IntPtr.Zero, IntPtr.Zero);   // LB_GETCURSEL
+      return (int)(long)SendMessage(h, 0x100C, (IntPtr)(-1), (IntPtr)2);                    // LVM_GETNEXTITEM from -1, LVNI_SELECTED
+    }
+    public static string ListSelText(IntPtr h, string ch) {
+      int i = ListSelIndex(h, ch);
+      if (i < 0) return "";
+      return ListItemByChannel(h, ch, i);
+    }
+    // Select by control type. cb/lb: SETCURSEL + the parent's WM_COMMAND
+    // notification (dialogs read selection lazily; CBN/LBN_SELCHANGE = 1).
+    // lv: LVIS selection-state message first, then a real click on the item
+    // rect so the dialog receives LVN_ITEMCHANGED exactly like a human click.
+    // The .ps1 reads the selection back before ever clicking Print.
+    public static string ListSelect(IntPtr h, string ch, int i) {
+      if (ch == "cb") {
+        SendMessage(h, 0x014E, (IntPtr)i, IntPtr.Zero);            // CB_SETCURSEL
+        IntPtr pc = GetParent(h);
+        int idc = GetDlgCtrlID(h);
+        if (pc != IntPtr.Zero && idc != 0) SendMessage(pc, 0x0111, (IntPtr)((1 << 16) | idc), h);  // CBN_SELCHANGE
+        return "set-cur";
+      }
+      if (ch == "lb") {
+        SendMessage(h, 0x0186, (IntPtr)i, IntPtr.Zero);            // LB_SETCURSEL
+        IntPtr pl = GetParent(h);
+        int idl = GetDlgCtrlID(h);
+        if (pl != IntPtr.Zero && idl != 0) SendMessage(pl, 0x0111, (IntPtr)((1 << 16) | idl), h);  // LBN_SELCHANGE
+        return "set-cur";
+      }
+      int cap = Marshal.SizeOf(typeof(LVITEMW));
+      IntPtr ps = Marshal.AllocHGlobal(cap);
+      IntPtr pr = Marshal.AllocHGlobal(cap);
+      try {
+        LVITEMW st = new LVITEMW();
+        st.mask = 0x0008;   // LVIF_STATE
+        st.iItem = i; st.iSubItem = 0;
+        st.state = 0x0003; st.stateMask = 0x0003;                  // SELECTED | FOCUSED
+        Marshal.StructureToPtr(st, ps, false);
+        SendMessage(h, 0x102A, IntPtr.Zero, ps);                   // LVM_SETITEMSTATE
+        if (ListSelIndex(h, "lv") == i) return "set-itemstate";
+        SendMessage(h, 0x100F, (IntPtr)i, IntPtr.Zero);            // LVM_ENSUREVISIBLE
+        // attempt A: wParam = item index, RECT written at lParam
+        Marshal.Copy(new byte[cap], 0, pr, cap);
+        SendMessage(h, 0x100E, (IntPtr)i, pr);                     // LVM_GETITEMRECT
+        if (ClickItemRect(h, pr)) return "rect-click";
+        // attempt B: wParam = LVIR_BOUNDS(0), item seeded in LVITEM layout
+        byte[] seed = new byte[cap];
+        BitConverter.GetBytes(i).CopyTo(seed, 4);                  // iItem at offset 4
+        Marshal.Copy(seed, 0, pr, cap);
+        SendMessage(h, 0x100E, IntPtr.Zero, pr);
+        if (ClickItemRect(h, pr)) return "rect-click";
+        return "no-rect";
+      } finally { Marshal.FreeHGlobal(ps); Marshal.FreeHGlobal(pr); }
+    }
+    private static bool ClickItemRect(IntPtr h, IntPtr buf) {
+      int l = Marshal.ReadInt32(buf, 0);
+      int t = Marshal.ReadInt32(buf, 4);
+      int r = Marshal.ReadInt32(buf, 8);
+      int b = Marshal.ReadInt32(buf, 12);
+      if (r - l <= 4 || b - t <= 4) return false;
+      PT pt = new PT();
+      pt.X = l + (r - l) / 2;
+      pt.Y = t + (b - t) / 2;
+      if (!ClientToScreen(h, ref pt)) return false;
+      SetCursorPos(pt.X, pt.Y);
+      mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero);
+      mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero);
+      return true;
+    }
   }
 }
 "@
@@ -153,6 +327,59 @@ function Get-DlgUiText([IntPtr]$h) {
         }
         return ($head + ' ' + $sb.ToString())
     } catch { return '' }
+}
+function Get-KidClassSummary([string[]]$kids) {
+    # Compact 'class:count,...' summary of the dialog's Win32 children -- the
+    # scene that travels back in failures when nothing is classifiable.
+    $cnt = @{}
+    foreach ($k in $kids) {
+        $p = $k.Split([char]'|', 3)
+        if ($p.Length -lt 2) { continue }
+        $cls = $p[1]
+        if ($cls -eq '') { $cls = '(none)' }
+        if ($cnt.ContainsKey($cls)) { $cnt[$cls] = $cnt[$cls] + 1 } else { $cnt[$cls] = 1 }
+    }
+    $parts = @()
+    foreach ($key in @($cnt.Keys | Sort-Object)) { $parts += ('{0}:{1}' -f $key, $cnt[$key]) }
+    return ($parts -join ',')
+}
+function Read-W32PrinterList([IntPtr]$h, [string[]]$kids, [string]$pinId) {
+    # The printer list among the dialog children -> @{names; ctrl; ch}.
+    # Window-message channels probed per candidate: ComboBox / ListBox /
+    # SysListView32 -- E2 measured this same dialog's list (Brother / Microsoft
+    # Print to PDF / OneNote) through Win32; the ninth shot's UIA FolderView
+    # path reports zero named children, so the marker match never fired.
+    # -PrinterComboId stays the pinned escape hatch: given but absent = the
+    # old printer-combo-id-not-found hard stop (meaning unchanged).
+    $cands = @()
+    if ($pinId -ne '') {
+        $ph = [RP.U]::GetDlgItem($h, [int]$pinId)
+        if ($ph -eq [IntPtr]::Zero) { Fail 'report-printer' 'printer-combo-id-not-found' }
+        $cands += $ph
+    }
+    $auto = @()
+    foreach ($k in $kids) {
+        $p = $k.Split([char]'|', 3)
+        if ($p.Length -lt 3) { continue }
+        $hw = [IntPtr]([long]$p[0])
+        $auto += $hw
+        if ($p[1] -eq 'SysListView32' -or $p[1] -eq 'ListBox' -or $p[1] -eq 'ComboBox' -or $p[1] -eq 'ComboBoxEx32') {
+            $cands += $hw
+        }
+    }
+    if ($cands.Count -eq 0) { $cands = $auto }   # class-blind probe fallback
+    $names0 = @(); $ctrl0 = [IntPtr]::Zero; $ch0 = ''
+    foreach ($cw in $cands) {
+        $ch = [RP.U]::ListChannel($cw)
+        if ($ch -eq '') { continue }
+        $names = @([RP.U]::ListRead($cw, $ch))
+        if ($names.Count -eq 0) { continue }
+        if (($names -join ' ') -match 'Microsoft Print to PDF') {
+            return @{ names = $names; ctrl = $cw; ch = $ch }
+        }
+        if ($names0.Count -eq 0) { $names0 = $names; $ctrl0 = $cw; $ch0 = $ch }
+    }
+    return @{ names = $names0; ctrl = $ctrl0; ch = $ch0 }
 }
 
 # ------------------------------------------------------------------ context
@@ -609,66 +836,98 @@ Emit 'report-print' 'ok' ("via=" + $prVia)
 # Measured 2026-10-19 E2: the Windows PRINT dialog opens first (#32770; print
 # button = GetDlgItem(1) 'Print(&P)', cancel = 2), and the machine's default
 # printer is an OFFLINE device, so the PDF printer must be chosen INSIDE this
-# dialog -- system settings are outside the allowed scope. The Print-to-PDF
-# SAVE window follows as the second dialog.
-# Classification uses UIA text markers measured on the machine (the printer
-# list carries 'Microsoft Print to PDF' / 'OneNote' / 'Brother'; the save
-# window's type row carries '.pdf'). An unclassifiable dialog FAILS with its
-# text attached instead of guessing -- no silent mis-routing.
+# dialog -- system settings are outside the allowed scope (read-only queries
+# only, never a system-setting write, no paper). The Print-to-PDF SAVE window
+# follows as the second dialog (its type row carries '.pdf'; its button 1 is
+# measured 'Save(&S)').
+# 2026-10-22 TENTH BATCH, from the ninth shot's two-sample root cause: the UIA
+# tree of this dialog is 30 Panes and the printer list FolderView has ZERO
+# named children (samples 6s apart byte-identical), so the old
+# '$txt1 -match <printer names>' classification structurally never fired and
+# every run died at unclassified-dialog. What moves:
+#   - CLASSIFY by the measured accelerator on button 1 ('&P' = print dialog,
+#     '&S'/'\.pdf' = save window; the UIA marker set stays as fallback when
+#     the button text cannot be read),
+#   - SELECT via Win32 list messages (E2 read the list contents through Win32
+#     on this same dialog; the 30-Pane UIA text survives as the ui= evidence
+#     field, nothing else about it changes),
+#   - SHORTCUT when the read-only default printer already is the PDF one,
+#   - every failure carries the Win32 child scene + default printer; no blind
+#     clicks, and report-printer says ok ONLY after the print dialog closed
+#     and the save window appeared.
 $hDlg1 = Wait-Dialog $DialogTimeoutMs ([IntPtr]::Zero)
 if ($hDlg1 -eq [IntPtr]::Zero) { Fail 'report-printer' 'print-dialog-not-found' }
 $txt1 = Get-DlgUiText $hDlg1
+$kids = [RP.U]::ChildScene($hDlg1)
+$classSummary = Get-KidClassSummary $kids
+$defName = [RP.U]::GetDefaultPrinterName()
+$btn1t = [RP.U]::DlgItemText($hDlg1, 1)
+$snip = ($txt1 -replace '\s+', ' ')
+if ($snip.Length -gt 120) { $snip = $snip.Substring(0, 120) }
 $hSave = [IntPtr]::Zero
-
-if ($txt1 -match 'Print to PDF|OneNote|Brother') {
-    # --- select the printer: UIA expand + select on the printer combo;
-    #     -PrinterComboId (Win32 control id) pins the combo when auto fails.
-    $comboEl = $null
-    if ($PrinterComboId -ne '') {
-        $cw = [RP.U]::GetDlgItem($hDlg1, [int]$PrinterComboId)
-        if ($cw -eq [IntPtr]::Zero) { Fail 'report-printer' 'printer-combo-id-not-found' }
-        try { $comboEl = [System.Windows.Automation.AutomationElement]::FromHandle($cw) } catch { }
+$printerOk = $false
+$printerVia = ''
+$selVia = ''
+$listNames = ''
+$pickIdx = -1
+if ($btn1t -match '&P' -or ($btn1t -eq '' -and $txt1 -match 'FolderView|Print to PDF|OneNote|Brother')) {
+    # this is the print dialog: read the list (one settle re-read, the list
+    # fills after the dialog paints), then pick the PDF entry.
+    $listInfo = Read-W32PrinterList $hDlg1 $kids $PrinterComboId
+    if (@($listInfo.names).Count -eq 0) {
+        Start-Sleep -Milliseconds 800
+        $listInfo = Read-W32PrinterList $hDlg1 $kids $PrinterComboId
+    }
+    $listNames = (@($listInfo.names) -join ';')
+    if ($listNames -ne '' -and $listNames -match 'Microsoft Print to PDF') {
+        # main route: select in the Win32 list, then READ BACK the selection --
+        # the click on Print only happens after this check passes.
+        for ($ci = 0; $ci -lt @($listInfo.names).Count; $ci++) {
+            if ($listInfo.names[$ci] -match 'Microsoft Print to PDF') { $pickIdx = $ci; break }
+        }
+        $fg = [RP.U]::GetForegroundWindow()
+        if ($fg -ne $hDlg1) { [void][RP.U]::SetForegroundWindow($hDlg1); Start-Sleep -Milliseconds 300 }
+        $selVia = [RP.U]::ListSelect($listInfo.ctrl, $listInfo.ch, $pickIdx)
+        $readBack = [RP.U]::ListSelText($listInfo.ctrl, $listInfo.ch)
+        if ($readBack -notmatch 'Microsoft Print to PDF') {
+            Fail 'report-printer' ("printer-not-selectable-use-PrinterComboId via=win32-list ch={0} selvia={1} idx={2} readback='{3}' list='{4}' default='{5}' win32='{6}' ui='{7}'" -f $listInfo.ch, $selVia, $pickIdx, $readBack, $listNames, $defName, $classSummary, $snip)
+        }
+        $printerVia = 'win32-list'
+        $printerOk = $true
+    } elseif ($listNames -ne '') {
+        Fail 'report-printer' ("printer-not-in-win32-list n={0} list='{1}' default='{2}' win32='{3}' ui='{4}'" -f (@($listInfo.names).Count), $listNames, $defName, $classSummary, $snip)
+    } elseif ($defName -match 'Microsoft Print to PDF') {
+        # short route (read-only): the dialog opens on the default printer and
+        # the default IS Microsoft Print to PDF -- nothing to select.
+        $printerVia = 'default-shortcut'
+        $selVia = 'none'
+        $printerOk = $true
     } else {
-        try {
-            $dw = [System.Windows.Automation.AutomationElement]::FromHandle($hDlg1)
-            $cc = New-Object System.Windows.Automation.PropertyCondition(
-                [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-                [System.Windows.Automation.ControlType]::ComboBox)
-            $comboEl = $dw.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $cc)
-        } catch { }
+        Fail 'report-printer' ("printer-list-win32-unreadable win32='{0}' default='{1}' btn1='{2}' ui='{3}'" -f $classSummary, $defName, $btn1t, $snip)
     }
-    $printerOk = $false
-    if ($comboEl -ne $null) {
-        try {
-            $comboEl.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern).Expand()
-            Start-Sleep -Milliseconds 600
-            $lc = New-Object System.Windows.Automation.PropertyCondition(
-                [System.Windows.Automation.AutomationElement]::NameProperty, 'Microsoft Print to PDF')
-            $li = $comboEl.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $lc)
-            if ($li -ne $null) {
-                $li.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
-                $printerOk = $true
-            }
-            try { $comboEl.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern).Collapse() } catch { }
-        } catch { }
-    }
-    if (-not $printerOk) {
-        Fail 'report-printer' 'printer-not-selectable-use-PrinterComboId'
-    }
-    Start-Sleep -Milliseconds 500
-    $hPrint = [RP.U]::GetDlgItem($hDlg1, 1)          # measured: print button = GetDlgItem(1)
-    if ($hPrint -eq [IntPtr]::Zero) { Fail 'report-printer' 'print-button-not-found' }
-    [void][RP.U]::SendMessage($hPrint, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)   # BM_CLICK
-    Emit 'report-printer' 'ok' 'printer=Microsoft Print to PDF'
-    $hSave = Wait-Dialog $DialogTimeoutMs $hDlg1     # the save window is the NEXT dialog
-    if ($hSave -eq [IntPtr]::Zero) { Fail 'report-save' 'save-dialog-not-found' }
-} elseif ($txt1 -match '\.pdf') {
+} elseif ($btn1t -match '&S' -or $txt1 -match '\.pdf') {
+    # the SAVE window came directly (no print dialog in between)
     Emit 'report-printer' 'ok' 'print-dialog-absent-default-is-pdf'
     $hSave = $hDlg1
 } else {
-    $snip = ($txt1 -replace '\s+', ' ')
-    if ($snip.Length -gt 120) { $snip = $snip.Substring(0, 120) }
-    Fail 'report-printer' ("unclassified-dialog ui='{0}'" -f $snip)
+    Fail 'report-printer' ("unclassified-dialog ui='{0}' win32='{1}' default='{2}' btn1='{3}'" -f $snip, $classSummary, $defName, $btn1t)
+}
+if ($printerOk) {
+    # functional gate: after the click the print dialog must CLOSE and the save
+    # window must APPEAR -- "it was clicked" is never the ok.
+    $hPrint = [RP.U]::GetDlgItem($hDlg1, 1)          # measured: print button = GetDlgItem(1)
+    if ($hPrint -eq [IntPtr]::Zero) { Fail 'report-printer' 'print-button-not-found' }
+    [void][RP.U]::SendMessage($hPrint, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)   # BM_CLICK
+    $gsw = [Diagnostics.Stopwatch]::StartNew()
+    while ($gsw.ElapsedMilliseconds -lt 5000 -and [RP.U]::IsWindowVisible($hDlg1)) {
+        Start-Sleep -Milliseconds 200
+    }
+    if ([RP.U]::IsWindowVisible($hDlg1)) {
+        Fail 'report-printer' ("print-dialog-still-open via={0} list='{1}' default='{2}' ui='{3}'" -f $printerVia, $listNames, $defName, $snip)
+    }
+    $hSave = Wait-Dialog $DialogTimeoutMs $hDlg1     # the save window is the NEXT dialog
+    if ($hSave -eq [IntPtr]::Zero) { Fail 'report-save' 'save-dialog-not-found' }
+    Emit 'report-printer' 'ok' ("via={0} printer='Microsoft Print to PDF' selvia={1} list='{2}' default='{3}'" -f $printerVia, $selVia, $listNames, $defName)
 }
 
 # ------------------------------------------------------- 4) save dialog

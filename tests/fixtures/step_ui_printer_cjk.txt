@@ -1,0 +1,1 @@
+STEP report-printer fail unclassified-dialog ui='打印 常规  FolderView 选择打印机 状态: 脱机 位置:  备注:  首选项(R) 查找打印机(D)...  页面范围 全部(L)' win32='Button:5,Pane:14,SysListView32:1' default='Brother' btn1='打印(&P)'
