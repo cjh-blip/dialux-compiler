@@ -86,9 +86,26 @@ namespace RP {
     [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref PT p);
     [DllImport("winspool.drv", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern bool GetDefaultPrinterW(StringBuilder s, ref int n);
+    [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L; public int T; public int R; public int B; }
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    public static extern IntPtr SendMessageTimeout(IntPtr h, int m, UIntPtr w, IntPtr l, uint flags, uint timeout, out UIntPtr result);
 
-    // "hwnd|class|text" per child (recursive): the scene that travels back
-    // in failures when nothing in the dialog can be classified.
+    // Read-side messages must not hang on a dying or hung dialog (tenth shot:
+    // PrintDlgEx self-crashed mid-read, 49s tail never located). 3s,
+    // SMTO_ABORTIFHUNG; a timeout/hung target reads back as 0 -- an honest
+    // empty string, never a stuck runner. ACTION messages (BM_CLICK) keep
+    // plain SendMessage so click behavior stays byte-identical.
+    public static IntPtr SafeSend(IntPtr h, int m, IntPtr w, IntPtr l) {
+      UIntPtr res;
+      IntPtr ok = SendMessageTimeout(h, m, (UIntPtr)w, l, 0x0002 /*SMTO_ABORTIFHUNG*/, 3000, out res);
+      if (ok == IntPtr.Zero) return IntPtr.Zero;
+      return (IntPtr)((long)res);
+    }
+
+    // "hwnd|class|text|l,t,r,b" per child (recursive): the scene that travels
+    // back in failures; the rect lets the caption-anchored container pick
+    // prove itself geometrically instead of by class name.
     public static string[] ChildScene(IntPtr p) {
       System.Collections.Generic.List<string> rows = new System.Collections.Generic.List<string>();
       EnumChildWindows(p, delegate(IntPtr h, IntPtr l) {
@@ -96,10 +113,15 @@ namespace RP {
         GetClassNameW(h, cls, 256);
         StringBuilder txt = new StringBuilder(512);
         GetWindowText(h, txt, 512);
-        rows.Add(((long)h).ToString() + "|" + cls.ToString() + "|" + txt.ToString());
+        rows.Add(((long)h).ToString() + "|" + cls.ToString() + "|" + txt.ToString() + "|" + RectStr(h));
         return true;
       }, IntPtr.Zero);
       return rows.ToArray();
+    }
+    private static string RectStr(IntPtr h) {
+      RECT r;
+      if (!GetWindowRect(h, out r)) return "-1,-1,-1,-1";
+      return r.L + "," + r.T + "," + r.R + "," + r.B;
     }
     // Read-only default-printer query (winspool). This query is the whole
     // allowance: never a system-setting write -- the printer is chosen
@@ -123,48 +145,102 @@ namespace RP {
     // SysListView32 (a shell FolderView hides its list this way). Unknown
     // messages answer 0, so probing arbitrary children is harmless.
     public static string ListChannel(IntPtr h) {
-      if ((long)SendMessage(h, 0x0146, IntPtr.Zero, IntPtr.Zero) > 0) return "cb";   // CB_GETCOUNT
-      if ((long)SendMessage(h, 0x018B, IntPtr.Zero, IntPtr.Zero) > 0) return "lb";   // LB_GETCOUNT
-      if ((long)SendMessage(h, 0x1004, IntPtr.Zero, IntPtr.Zero) > 0) return "lv";   // LVM_GETITEMCOUNT
+      if ((long)SafeSend(h, 0x0146, IntPtr.Zero, IntPtr.Zero) > 0) return "cb";   // CB_GETCOUNT
+      if ((long)SafeSend(h, 0x018B, IntPtr.Zero, IntPtr.Zero) > 0) return "lb";   // LB_GETCOUNT
+      if ((long)SafeSend(h, 0x1004, IntPtr.Zero, IntPtr.Zero) > 0) return "lv";   // LVM_GETITEMCOUNT
       return "";
     }
+    // Item text WITH the per-item reply count (eleventh-batch fix: the count
+    // said 3 while every text came back empty, so the reply count travels in
+    // the probe and 'wrong message' vs 'virtual list answers nothing' is
+    // readable from the failure itself). lv: LVM_GETITEMTEXTW with the index
+    // in wParam AND in the struct (tenth batch had wParam=0 -- air), then the
+    // A variant decoded as cp936; cb/lb: CB_GETLBTEXT/LB_GETTEXT with the
+    // same empty-read A fallback.
     private static string ListItemByChannel(IntPtr h, string ch, int i) {
+      int rc;
+      return ListItemByChannelEx(h, ch, i, out rc);
+    }
+    private static string ListItemByChannelEx(IntPtr h, string ch, int i, out int rc) {
+      rc = 0;
       if (ch == "lv") {
         IntPtr buf = Marshal.AllocHGlobal(1024);
         IntPtr p = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(LVITEMW)));
         try {
-          Marshal.Copy(new byte[1024], 0, buf, 1024);
           LVITEMW it = new LVITEMW();
           it.mask = 1; it.iItem = i; it.iSubItem = 0;
           it.pszText = buf; it.cchTextMax = 511;
+          Marshal.Copy(new byte[1024], 0, buf, 1024);
           Marshal.StructureToPtr(it, p, false);
-          SendMessage(h, 0x1073, IntPtr.Zero, p);            // LVM_GETITEMTEXTW
-          return Marshal.PtrToStringUni(buf) ?? "";
+          rc = (int)(long)SafeSend(h, 0x1073, (IntPtr)i, p);   // LVM_GETITEMTEXTW, wParam = index
+          string txtW = Marshal.PtrToStringUni(buf) ?? "";
+          if (txtW.Length > 0) return txtW;
+          Marshal.Copy(new byte[1024], 0, buf, 1024);
+          Marshal.StructureToPtr(it, p, false);
+          int rcA = (int)(long)SafeSend(h, 0x102D, (IntPtr)i, p);   // LVM_GETITEMTEXTA
+          if (rcA > rc) rc = rcA;
+          return AnsiFrom(buf);
         } finally { Marshal.FreeHGlobal(p); Marshal.FreeHGlobal(buf); }
       }
       IntPtr b = Marshal.AllocHGlobal(1024);
       try {
         Marshal.Copy(new byte[1024], 0, b, 1024);
-        if (ch == "cb") SendMessage(h, 0x0148, (IntPtr)i, b); // CB_GETLBTEXT
-        else SendMessage(h, 0x0189, (IntPtr)i, b);            // LB_GETTEXT
-        return Marshal.PtrToStringUni(b) ?? "";
+        if (ch == "cb") rc = (int)(long)SafeSend(h, 0x0148, (IntPtr)i, b);  // CB_GETLBTEXT
+        else rc = (int)(long)SafeSend(h, 0x0189, (IntPtr)i, b);             // LB_GETTEXT
+        string txt = Marshal.PtrToStringUni(b) ?? "";
+        if (txt.Length > 0) return txt;
+        return AnsiFrom(b);
       } finally { Marshal.FreeHGlobal(b); }
     }
-    public static string[] ListRead(IntPtr h, string ch) {
+    private static string AnsiFrom(IntPtr buf) {
+      byte[] raw = new byte[1024];
+      Marshal.Copy(buf, raw, 0, 1024);
+      int z = 0;
+      while (z < 1024 && raw[z] != 0) z++;
+      if (z == 0) return "";
+      try { return Encoding.GetEncoding(936).GetString(raw, 0, z); }
+      catch { return System.Text.Encoding.ASCII.GetString(raw, 0, z); }
+    }
+    private static int ListCount(IntPtr h, string ch) {
       int n = 0;
-      if (ch == "cb") n = (int)(long)SendMessage(h, 0x0146, IntPtr.Zero, IntPtr.Zero);
-      else if (ch == "lb") n = (int)(long)SendMessage(h, 0x018B, IntPtr.Zero, IntPtr.Zero);
-      else if (ch == "lv") n = (int)(long)SendMessage(h, 0x1004, IntPtr.Zero, IntPtr.Zero);
+      if (ch == "cb") n = (int)(long)SafeSend(h, 0x0146, IntPtr.Zero, IntPtr.Zero);
+      else if (ch == "lb") n = (int)(long)SafeSend(h, 0x018B, IntPtr.Zero, IntPtr.Zero);
+      else if (ch == "lv") n = (int)(long)SafeSend(h, 0x1004, IntPtr.Zero, IntPtr.Zero);
       if (n < 0) n = 0;
+      return n;
+    }
+    public static string[] ListRead(IntPtr h, string ch) {
+      int n = ListCount(h, ch);
       if (n > 64) n = 64;
       string[] items = new string[n];
       for (int i = 0; i < n; i++) items[i] = ListItemByChannel(h, ch, i);
       return items;
     }
+    // One-line forensic for the probe field: channel, count, every item's
+    // reply count, first item text -- travels in every printer-list failure.
+    public static string ListReadInfo(IntPtr h, string ch) {
+      if (ch == null || ch.Length == 0) return "ch=none";
+      int n = ListCount(h, ch);
+      if (n > 64) n = 64;
+      int[] rcs = new int[n];
+      string first = "";
+      for (int i = 0; i < n; i++) {
+        int rc;
+        string txt = ListItemByChannelEx(h, ch, i, out rc);
+        rcs[i] = rc;
+        if (i == 0) first = txt;
+      }
+      StringBuilder sb = new StringBuilder();
+      sb.Append(ch).Append('=').Append(n).Append(" rc=");
+      for (int i = 0; i < n; i++) { if (i > 0) sb.Append(','); sb.Append(rcs[i]); }
+      if (n == 0) { sb.Append(" first=none"); return sb.ToString(); }
+      sb.Append(" first='").Append(first.Length > 30 ? first.Substring(0, 30) : first).Append("'");
+      return sb.ToString();
+    }
     public static int ListSelIndex(IntPtr h, string ch) {
-      if (ch == "cb") return (int)(long)SendMessage(h, 0x0147, IntPtr.Zero, IntPtr.Zero);   // CB_GETCURSEL
-      if (ch == "lb") return (int)(long)SendMessage(h, 0x0188, IntPtr.Zero, IntPtr.Zero);   // LB_GETCURSEL
-      return (int)(long)SendMessage(h, 0x100C, (IntPtr)(-1), (IntPtr)2);                    // LVM_GETNEXTITEM from -1, LVNI_SELECTED
+      if (ch == "cb") return (int)(long)SafeSend(h, 0x0147, IntPtr.Zero, IntPtr.Zero);   // CB_GETCURSEL
+      if (ch == "lb") return (int)(long)SafeSend(h, 0x0188, IntPtr.Zero, IntPtr.Zero);   // LB_GETCURSEL
+      return (int)(long)SafeSend(h, 0x100C, (IntPtr)(-1), (IntPtr)2);                    // LVM_GETNEXTITEM from -1, LVNI_SELECTED
     }
     public static string ListSelText(IntPtr h, string ch) {
       int i = ListSelIndex(h, ch);
@@ -178,17 +254,17 @@ namespace RP {
     // The .ps1 reads the selection back before ever clicking Print.
     public static string ListSelect(IntPtr h, string ch, int i) {
       if (ch == "cb") {
-        SendMessage(h, 0x014E, (IntPtr)i, IntPtr.Zero);            // CB_SETCURSEL
+        SafeSend(h, 0x014E, (IntPtr)i, IntPtr.Zero);            // CB_SETCURSEL
         IntPtr pc = GetParent(h);
         int idc = GetDlgCtrlID(h);
-        if (pc != IntPtr.Zero && idc != 0) SendMessage(pc, 0x0111, (IntPtr)((1 << 16) | idc), h);  // CBN_SELCHANGE
+        if (pc != IntPtr.Zero && idc != 0) SafeSend(pc, 0x0111, (IntPtr)((1 << 16) | idc), h);  // CBN_SELCHANGE
         return "set-cur";
       }
       if (ch == "lb") {
-        SendMessage(h, 0x0186, (IntPtr)i, IntPtr.Zero);            // LB_SETCURSEL
+        SafeSend(h, 0x0186, (IntPtr)i, IntPtr.Zero);            // LB_SETCURSEL
         IntPtr pl = GetParent(h);
         int idl = GetDlgCtrlID(h);
-        if (pl != IntPtr.Zero && idl != 0) SendMessage(pl, 0x0111, (IntPtr)((1 << 16) | idl), h);  // LBN_SELCHANGE
+        if (pl != IntPtr.Zero && idl != 0) SafeSend(pl, 0x0111, (IntPtr)((1 << 16) | idl), h);  // LBN_SELCHANGE
         return "set-cur";
       }
       int cap = Marshal.SizeOf(typeof(LVITEMW));
@@ -200,18 +276,18 @@ namespace RP {
         st.iItem = i; st.iSubItem = 0;
         st.state = 0x0003; st.stateMask = 0x0003;                  // SELECTED | FOCUSED
         Marshal.StructureToPtr(st, ps, false);
-        SendMessage(h, 0x102A, IntPtr.Zero, ps);                   // LVM_SETITEMSTATE
+        SafeSend(h, 0x102A, IntPtr.Zero, ps);                      // LVM_SETITEMSTATE
         if (ListSelIndex(h, "lv") == i) return "set-itemstate";
-        SendMessage(h, 0x100F, (IntPtr)i, IntPtr.Zero);            // LVM_ENSUREVISIBLE
+        SafeSend(h, 0x100F, (IntPtr)i, IntPtr.Zero);               // LVM_ENSUREVISIBLE
         // attempt A: wParam = item index, RECT written at lParam
         Marshal.Copy(new byte[cap], 0, pr, cap);
-        SendMessage(h, 0x100E, (IntPtr)i, pr);                     // LVM_GETITEMRECT
+        SafeSend(h, 0x100E, (IntPtr)i, pr);                        // LVM_GETITEMRECT
         if (ClickItemRect(h, pr)) return "rect-click";
         // attempt B: wParam = LVIR_BOUNDS(0), item seeded in LVITEM layout
         byte[] seed = new byte[cap];
         BitConverter.GetBytes(i).CopyTo(seed, 4);                  // iItem at offset 4
         Marshal.Copy(seed, 0, pr, cap);
-        SendMessage(h, 0x100E, IntPtr.Zero, pr);
+        SafeSend(h, 0x100E, IntPtr.Zero, pr);
         if (ClickItemRect(h, pr)) return "rect-click";
         return "no-rect";
       } finally { Marshal.FreeHGlobal(ps); Marshal.FreeHGlobal(pr); }
@@ -343,43 +419,86 @@ function Get-KidClassSummary([string[]]$kids) {
     foreach ($key in @($cnt.Keys | Sort-Object)) { $parts += ('{0}:{1}' -f $key, $cnt[$key]) }
     return ($parts -join ',')
 }
+function Test-ListAdjToCaption([string]$rect, [string]$anchor) {
+    # Geometry rank for the caption-anchored pick (eleventh batch): the Static
+    # caption 'select printers' (CJK assembled from char codes, file stays
+    # ASCII) marks the list sitting right under or around it. Ranks only --
+    # NEVER excludes -- so a wrong pick still shows up in the probe instead of
+    # hiding behind it.
+    if ($anchor -eq '' -or $rect -eq '') { return $false }
+    $a = $anchor.Split([char]',')
+    $c = $rect.Split([char]',')
+    if ($a.Length -lt 4 -or $c.Length -lt 4) { return $false }
+    $al = [double]$a[0]; $at = [double]$a[1]; $ar = [double]$a[2]; $ab = [double]$a[3]
+    $cl = [double]$c[0]; $ct = [double]$c[1]; $cr = [double]$c[2]; $cb = [double]$c[3]
+    if ($cl -ge $ar -or $cr -le $al) { return $false }                  # no x overlap
+    if ($ct -ge ($ab - 4) -and $ct -le ($ab + 100)) { return $true }    # top just below
+    if ($ct -le $at -and $cb -ge $ab) { return $true }                  # caption inside
+    return $false
+}
 function Read-W32PrinterList([IntPtr]$h, [string[]]$kids, [string]$pinId) {
-    # The printer list among the dialog children -> @{names; ctrl; ch}.
-    # Window-message channels probed per candidate: ComboBox / ListBox /
-    # SysListView32 -- E2 measured this same dialog's list (Brother / Microsoft
-    # Print to PDF / OneNote) through Win32; the ninth shot's UIA FolderView
-    # path reports zero named children, so the marker match never fired.
+    # The printer list among the dialog children -> @{names; ctrl; ch; probe}.
+    # Window-message channels per candidate: ComboBox / ListBox / SysListView32
+    # -- E2 measured this same dialog's list (Brother / Microsoft Print to PDF /
+    # OneNote) through Win32; the ninth shot's UIA FolderView path reports zero
+    # named children, so the marker match never fired.
+    # Eleventh-batch fixes on top (tenth shot: n=3 but list=';;'):
+    #   - ORDER is caption-anchored, not class-guessed: the Static caption
+    #     marks the real container; adjacency ranks, presence never excludes
+    #     (pin still outranks geometry -- caller pinned it deliberately);
+    #   - EVERY readable candidate is read AND traced (ch, per-item reply
+    #     counts, first text) so the probe tells 'right control, wrong
+    #     message' apart from 'virtual list answers nothing' by itself.
     # -PrinterComboId stays the pinned escape hatch: given but absent = the
     # old printer-combo-id-not-found hard stop (meaning unchanged).
+    $selWord = ([char]0x9009).ToString() + ([char]0x62E9).ToString() + ([char]0x6253).ToString() + ([char]0x5370).ToString() + ([char]0x673A).ToString()  # select printers
+    $anchorRect = ''
+    foreach ($k in $kids) {
+        $p = $k.Split([char]'|', 4)
+        if ($p.Length -lt 4) { continue }
+        if ($p[1] -eq 'Static' -and $p[2].Contains($selWord)) { $anchorRect = $p[3]; break }
+    }
     $cands = @()
     if ($pinId -ne '') {
         $ph = [RP.U]::GetDlgItem($h, [int]$pinId)
         if ($ph -eq [IntPtr]::Zero) { Fail 'report-printer' 'printer-combo-id-not-found' }
-        $cands += $ph
+        $cands += @{ hw = $ph; cls = 'pinned'; rect = ''; pri = 4 }
     }
     $auto = @()
     foreach ($k in $kids) {
-        $p = $k.Split([char]'|', 3)
-        if ($p.Length -lt 3) { continue }
+        $p = $k.Split([char]'|', 4)
+        if ($p.Length -lt 4) { continue }
         $hw = [IntPtr]([long]$p[0])
-        $auto += $hw
-        if ($p[1] -eq 'SysListView32' -or $p[1] -eq 'ListBox' -or $p[1] -eq 'ComboBox' -or $p[1] -eq 'ComboBoxEx32') {
-            $cands += $hw
+        $cls = $p[1]
+        $rect = $p[3]
+        $auto += @{ hw = $hw; cls = $cls; rect = $rect; pri = 0 }
+        if ($cls -eq 'SysListView32' -or $cls -eq 'ListBox' -or $cls -eq 'ComboBox' -or $cls -eq 'ComboBoxEx32') {
+            $pri = 1
+            if (Test-ListAdjToCaption $rect $anchorRect) { $pri = 3 }
+            $cands += @{ hw = $hw; cls = $cls; rect = $rect; pri = $pri }
         }
     }
     if ($cands.Count -eq 0) { $cands = $auto }   # class-blind probe fallback
+    $traces = @()
     $names0 = @(); $ctrl0 = [IntPtr]::Zero; $ch0 = ''
-    foreach ($cw in $cands) {
-        $ch = [RP.U]::ListChannel($cw)
-        if ($ch -eq '') { continue }
-        $names = @([RP.U]::ListRead($cw, $ch))
+    foreach ($cd in ($cands | Sort-Object -Property pri)) {
+        $ch = [RP.U]::ListChannel($cd.hw)
+        if ($ch -eq '') { $traces += ("{0}:no-channel" -f $cd.cls); continue }
+        $names = @([RP.U]::ListRead($cd.hw, $ch))
+        $info = [RP.U]::ListReadInfo($cd.hw, $ch)
+        $traces += ("{0}@{1}:{2}" -f $cd.cls, ($cd.hw.ToInt64().ToString('x')), $info)
         if ($names.Count -eq 0) { continue }
         if (($names -join ' ') -match 'Microsoft Print to PDF') {
-            return @{ names = $names; ctrl = $cw; ch = $ch }
+            $pb = ($traces -join ' ; ')
+            if ($pb.Length -gt 400) { $pb = $pb.Substring(0, 400) }
+            return @{ names = $names; ctrl = $cd.hw; ch = $ch; probe = $pb }
         }
-        if ($names0.Count -eq 0) { $names0 = $names; $ctrl0 = $cw; $ch0 = $ch }
+        if ($names0.Count -eq 0) { $names0 = $names; $ctrl0 = $cd.hw; $ch0 = $ch }
     }
-    return @{ names = $names0; ctrl = $ctrl0; ch = $ch0 }
+    $pb = ($traces -join ' ; ')
+    if ($traces.Count -eq 0) { $pb = 'na' }
+    if ($pb.Length -gt 400) { $pb = $pb.Substring(0, 400) }
+    return @{ names = $names0; ctrl = $ctrl0; ch = $ch0; probe = $pb }
 }
 
 # ------------------------------------------------------------------ context
@@ -869,6 +988,7 @@ $printerOk = $false
 $printerVia = ''
 $selVia = ''
 $listNames = ''
+$probe = 'na'
 $pickIdx = -1
 if ($btn1t -match '&P' -or ($btn1t -eq '' -and $txt1 -match 'FolderView|Print to PDF|OneNote|Brother')) {
     # this is the print dialog: read the list (one settle re-read, the list
@@ -878,6 +998,7 @@ if ($btn1t -match '&P' -or ($btn1t -eq '' -and $txt1 -match 'FolderView|Print to
         Start-Sleep -Milliseconds 800
         $listInfo = Read-W32PrinterList $hDlg1 $kids $PrinterComboId
     }
+    $probe = [string]$listInfo.probe
     $listNames = (@($listInfo.names) -join ';')
     if ($listNames -ne '' -and $listNames -match 'Microsoft Print to PDF') {
         # main route: select in the Win32 list, then READ BACK the selection --
@@ -890,12 +1011,12 @@ if ($btn1t -match '&P' -or ($btn1t -eq '' -and $txt1 -match 'FolderView|Print to
         $selVia = [RP.U]::ListSelect($listInfo.ctrl, $listInfo.ch, $pickIdx)
         $readBack = [RP.U]::ListSelText($listInfo.ctrl, $listInfo.ch)
         if ($readBack -notmatch 'Microsoft Print to PDF') {
-            Fail 'report-printer' ("printer-not-selectable-use-PrinterComboId via=win32-list ch={0} selvia={1} idx={2} readback='{3}' list='{4}' default='{5}' win32='{6}' ui='{7}'" -f $listInfo.ch, $selVia, $pickIdx, $readBack, $listNames, $defName, $classSummary, $snip)
+            Fail 'report-printer' ("printer-not-selectable-use-PrinterComboId via=win32-list ch={0} selvia={1} idx={2} readback='{3}' list='{4}' default='{5}' btn1='{6}' win32='{7}' probe='{8}' ui='{9}'" -f $listInfo.ch, $selVia, $pickIdx, $readBack, $listNames, $defName, $btn1t, $classSummary, $probe, $snip)
         }
         $printerVia = 'win32-list'
         $printerOk = $true
     } elseif ($listNames -ne '') {
-        Fail 'report-printer' ("printer-not-in-win32-list n={0} list='{1}' default='{2}' win32='{3}' ui='{4}'" -f (@($listInfo.names).Count), $listNames, $defName, $classSummary, $snip)
+        Fail 'report-printer' ("printer-not-in-win32-list n={0} list='{1}' ch={2} default='{3}' btn1='{4}' win32='{5}' probe='{6}' ui='{7}'" -f (@($listInfo.names).Count), $listNames, $listInfo.ch, $defName, $btn1t, $classSummary, $probe, $snip)
     } elseif ($defName -match 'Microsoft Print to PDF') {
         # short route (read-only): the dialog opens on the default printer and
         # the default IS Microsoft Print to PDF -- nothing to select.
@@ -903,7 +1024,7 @@ if ($btn1t -match '&P' -or ($btn1t -eq '' -and $txt1 -match 'FolderView|Print to
         $selVia = 'none'
         $printerOk = $true
     } else {
-        Fail 'report-printer' ("printer-list-win32-unreadable win32='{0}' default='{1}' btn1='{2}' ui='{3}'" -f $classSummary, $defName, $btn1t, $snip)
+        Fail 'report-printer' ("printer-list-win32-unreadable win32='{0}' default='{1}' btn1='{2}' probe='{3}' ui='{4}'" -f $classSummary, $defName, $btn1t, $probe, $snip)
     }
 } elseif ($btn1t -match '&S' -or $txt1 -match '\.pdf') {
     # the SAVE window came directly (no print dialog in between)
@@ -923,11 +1044,11 @@ if ($printerOk) {
         Start-Sleep -Milliseconds 200
     }
     if ([RP.U]::IsWindowVisible($hDlg1)) {
-        Fail 'report-printer' ("print-dialog-still-open via={0} list='{1}' default='{2}' ui='{3}'" -f $printerVia, $listNames, $defName, $snip)
+        Fail 'report-printer' ("print-dialog-still-open via={0} list='{1}' default='{2}' btn1='{3}' probe='{4}' ui='{5}'" -f $printerVia, $listNames, $defName, $btn1t, $probe, $snip)
     }
     $hSave = Wait-Dialog $DialogTimeoutMs $hDlg1     # the save window is the NEXT dialog
     if ($hSave -eq [IntPtr]::Zero) { Fail 'report-save' 'save-dialog-not-found' }
-    Emit 'report-printer' 'ok' ("via={0} printer='Microsoft Print to PDF' selvia={1} list='{2}' default='{3}'" -f $printerVia, $selVia, $listNames, $defName)
+    Emit 'report-printer' 'ok' ("via={0} printer='Microsoft Print to PDF' selvia={1} ch={2} list='{3}' default='{4}'" -f $printerVia, $selVia, $listInfo.ch, $listNames, $defName)
 }
 
 # ------------------------------------------------------- 4) save dialog
