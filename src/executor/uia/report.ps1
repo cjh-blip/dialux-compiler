@@ -30,7 +30,8 @@ param(
     [string]$PrintMenuId = '',
     [string]$PrinterComboId = '',
     [string]$FileNameId = '',
-    [string]$SaveButtonId = ''
+    [string]$SaveButtonId = '',
+    [string]$BreadCrumbPath = ''   # 13th batch: breadcrumb file for ARMED/STAGE/HEART/FACE (empty = %TEMP% default)
 )
 $ErrorActionPreference = 'Continue'
 Add-Type -AssemblyName UIAutomationClient
@@ -113,19 +114,49 @@ namespace RP {
     // ---- legal off the pipeline thread): Console write + Environment.Exit
     // ---- only, both .NET. Field names mirror the L1 timeout code so the
     // ---- two faces are indistinguishable in the log.
+    // ---- Thirteenth batch, from the twelfth shot (all three inner timeouts
+    // ---- silent 4/4): the timer callback alone could not testify WHY it did
+    // ---- not fire, so every transition now ALSO appends to a breadcrumb file
+    // ---- that needs no stdout channel: ARMED/STAGE/HEART/TARGET/DISARMED/
+    // ---- FACE, each with an epoch-ms stamp. The timer became a 5s heartbeat
+    // ---- that only writes the code face once the budget is spent -- the face
+    // ---- goes to the FILE FIRST, then stdout, then the process exits; a
+    // ---- blocked Console can no longer swallow it. External readers judge
+    // ---- liveness from STAGE lines (written by the main thread), which is
+    // ---- the only channel that stops when the main thread stops.
     public static string LastStage = "printer-start";
     private static System.Threading.Timer wTimer;
     private static int wStartTick;
     private static IntPtr wTarget;
     private static string wStep = "report-printer";
-    public static void WMark(string stage) { LastStage = stage; }
-    public static void WTarget(IntPtr h) { wTarget = h; }
+    private static string wCrumb = "";
+    private static long NowMs() {
+      return (long)(DateTime.UtcNow - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalMilliseconds;
+    }
+    private static void Crumb(string line) {
+      if (wCrumb == null || wCrumb.Length == 0) return;
+      try { System.IO.File.AppendAllText(wCrumb, line + "\n"); } catch { }
+    }
+    public static void WSetCrumb(string path) { wCrumb = path == null ? "" : path; }
+    public static void WMark(string stage) {
+      LastStage = stage;
+      Crumb("STAGE " + NowMs() + " stage=" + stage);
+    }
+    public static void WTarget(IntPtr h) {
+      wTarget = h;
+      Crumb("TARGET " + NowMs() + " target=0x" + h.ToInt64().ToString("x"));
+    }
     public static void WArm(int budgetMs, string stepName) {
       wStartTick = Environment.TickCount;
       wStep = stepName;
+      Crumb("ARMED " + NowMs() + " budget=" + budgetMs + " step=" + stepName);
       if (wTimer != null) { wTimer.Dispose(); wTimer = null; }
+      // 5s-period heartbeat; the budget check lives INSIDE the callback, so a
+      // silenced stdout face still leaves FACE in the file before exit.
       wTimer = new System.Threading.Timer(delegate(object s) {
-        int elapsed = Environment.TickCount - wStartTick;
+        long elapsed = (long)(uint)Environment.TickCount - (long)(uint)wStartTick;
+        Crumb("HEART " + NowMs() + " stage=" + LastStage + " elapsed=" + elapsed);
+        if (elapsed < budgetMs) return;
         string fg = "?";
         try {
           IntPtr fh = GetForegroundWindow();
@@ -137,16 +168,19 @@ namespace RP {
           if (title.Length > 40) title = title.Substring(0, 40);
           fg = fpid + ":" + title;
         } catch { }
+        string face = "STEP " + wStep + " fail printer-step-hang-timeout stage=watchdog last="
+          + LastStage + " elapsed=" + elapsed + " fg='" + fg + "' target=0x"
+          + wTarget.ToInt64().ToString("x") + " budget=" + budgetMs;
+        Crumb("FACE " + NowMs() + " " + face);
         try {
-          Console.WriteLine("STEP " + wStep + " fail printer-step-hang-timeout stage=watchdog last="
-            + LastStage + " elapsed=" + elapsed + " fg='" + fg + "' target=0x"
-            + wTarget.ToInt64().ToString("x") + " budget=" + budgetMs);
+          Console.WriteLine(face);
           Console.Out.Flush();
         } catch { }
         Environment.Exit(1);
-      }, null, budgetMs, System.Threading.Timeout.Infinite);
+      }, null, 5000, 5000);
     }
     public static void WDisarm() {
+      Crumb("DISARMED " + NowMs() + " stage=" + LastStage);
       if (wTimer != null) { wTimer.Dispose(); wTimer = null; }
     }
 
@@ -1089,6 +1123,11 @@ Emit 'report-print' 'ok' ("via=" + $prVia)
 #     spooler), a 15s total budget on the list probe loop, stage marks at
 #     every sub-action for watchdog localization. Root cause is NOT assumed:
 #     whichever of the three suspicions sticks, a code face comes back.
+# Thirteenth batch: the breadcrumb path is set BEFORE arming so the very first
+# transition (ARMED) lands on disk -- no stdout channel involved.
+$crumb = $BreadCrumbPath
+if ($crumb -eq '') { $crumb = (Join-Path $env:TEMP 'dialux_report_printer_crumb.txt') }
+[RP.U]::WSetCrumb($crumb)
 [RP.U]::WArm(120000, 'report-printer')
 [RP.U]::WTarget([IntPtr]::Zero)
 [RP.U]::WMark('wait-dialog')
