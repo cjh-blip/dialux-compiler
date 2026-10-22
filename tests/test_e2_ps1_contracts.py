@@ -17,7 +17,8 @@ UGR_PS1 = UIA / "ugr.ps1"
 UGR_PY = UIA / "ugr.py"
 REPORT_PS1 = UIA / "report.ps1"
 REPORT_PY = UIA / "report.py"
-E2_PS1 = (DRIVER_PS1, LUMINAIRE_PS1, UGR_PS1, REPORT_PS1)
+SAVEAS_PROBE = UIA / "saveas_probe.ps1"
+E2_PS1 = (DRIVER_PS1, LUMINAIRE_PS1, UGR_PS1, REPORT_PS1, SAVEAS_PROBE)
 
 
 def _src(p: Path) -> str:
@@ -36,10 +37,11 @@ def test_all_e2_ps1_are_pure_ascii():
     """PS 5.1 按 GBK 读无 BOM 的 .ps1：中文字在注释行外的任何位置都可能炸括号。
 
     本批判据分两档：driver/ugr/report 在 HEAD 就是纯 ASCII，必须继续为 0；
+    第十一批新增的 saveas_probe 同为新代码，同样零容忍；
     luminaire.ps1 带 **150 字节历史中文注释**（266-267 行，非本批引入、
     且它在真机上跑通过），本批不许再涨——新注释一律英文。
     """
-    for p in (DRIVER_PS1, UGR_PS1, REPORT_PS1):
+    for p in (DRIVER_PS1, UGR_PS1, REPORT_PS1, SAVEAS_PROBE):
         bad = [(i, b) for i, b in enumerate(p.read_bytes()) if b >= 128]
         assert not bad, f"{p.name} 含 {len(bad)} 个非 ASCII 字节，首个在偏移 {bad[0][0]}"
     lum_bad = sum(1 for b in LUMINAIRE_PS1.read_bytes() if b >= 128)
@@ -349,6 +351,63 @@ def test_report_ps1_printer_step_win32_channel():
     # 旧 UIA combo 选择路必须已删（第九枪已证结构上不可达的死路）
     assert "$comboEl" not in block, "旧 UIA combo 路已随根因移除"
     assert "ExpandCollapsePattern" not in block, "combo 展开选择同删"
+
+
+def test_report_ps1_list_text_read_and_probe():
+    r"""第十一批（第十枪 n=3 list=';;'）：计数通、文本空——只修“怎么把字
+    读出来”，判据与过闸一行不动：
+    - LVM_GETITEMTEXTW 的 wParam＝item index（第十批传 0＝读空气），
+      struct.iItem 同时填（双方言都盖）；空读退 A 版（cp936 解码）；
+    - 每候选读且取证：probe='cls@hwnd:ch=n rc=… first='…''（rc＝逐项消息
+      回复数），'对了控件错消息' vs '虚拟列表不答' 一次现场分得开；
+    - 容器定位不按类型猜：Static 标题（char 码拼，文件保 ASCII）＋rect
+      几何相邻只排序不排除，pin 优先级最高；ChildScene 带 rect；
+    - 读类消息全走 SafeSend（SendMessageTimeout 3s ABORTIFHUNG）——
+      崩溃/挂死窗口不再吊死 runner；BM_CLICK 动作消息保持原样；
+    - 失败码现场字段按实际补齐（上封信误称四码全带 btn1：本批 not-in-list
+      与 not-selectable 真带 btn1/probe/ch，unclassified 支保持原字段）。"""
+    t = _src(REPORT_PS1)
+    # wParam 修正与双方言盖、A 版备路
+    assert "0x1073, (IntPtr)i" in t, "LVM_GETITEMTEXTW 的 wParam 必须是 item index"
+    assert "it.iItem = i" in t, "struct.iItem 同时填（两种方言都盖）"
+    assert "0x102D" in t, "A 版备路（cp936）在场"
+    # 取证字段
+    assert "ListReadInfo" in t and " rc=" in t, "逐项回复数取证"
+    assert "probe='" in t, "probe 字段进现场"
+    for ln in ([x for x in t.splitlines() if "printer-not-in-win32-list" in x]
+               + [x for x in t.splitlines() if "via=win32-list ch=" in x]):
+        assert "btn1=" in ln and "probe=" in ln, f"字段补齐漏码：{ln[:60]}"
+        assert "ch=" in ln, f"ch 字段漏：{ln[:60]}"
+    # caption 锚（char 码拼，文件保 ASCII）＋几何只排序不排除
+    for code in ("0x9009", "0x62E9", "0x673A"):
+        assert code in t, f"选择打印机标题 char 码 {code} 不在"
+    assert "Test-ListAdjToCaption" in t
+    assert "NEVER excludes" in t or "never excludes" in t, "几何只排序不排除"
+    assert "GetWindowRect" in t, "rect 进 ChildScene 供几何锚"
+    # 读消息防挂；动作消息不换
+    assert "SendMessageTimeout" in t and "SafeSend" in t
+    assert "[void][RP.U]::SendMessage($hPrint, 0x00F5" in t, (
+        "BM_CLICK 动作消息保持原样（只读消息才超时）")
+    # 判据不动：选中→回读→双闸由第十批既有断言守（回读在点击前、过闸序）
+
+
+def test_saveas_probe_is_readonly():
+    r"""件2（第十一批点名，不实施换线）：另存为候选路线的只读属性 dump。
+    只取材不换线——换线是方案级、归统筹挂卡；本测试把“只读”钉成负断言：
+    脚本里不许出现任何点击/调用/选中动作，输出必须是 UTF-8 声明后的属性行。"""
+    src = _src(SAVEAS_PROBE)
+    raw = SAVEAS_PROBE.read_bytes()
+    bad = [b for b in raw if b >= 128]
+    assert not bad, f"saveas_probe.ps1 含 {len(bad)} 个非 ASCII 字节"
+    assert "ButtonPrintDocument" in src, "锚＝实测报表工具栏打印按钮 id"
+    assert "BoundingRectangle" in src and "AutomationId" in src, "属性字段齐全"
+    assert "OutputEncoding" in src, "输出编码声明（Name 为本地化中文）"
+    assert "BTN name=" in src and "ANCHOR aid=" in src, "输出行格式在场"
+    # 只读铁证：零动作
+    for tok in (".Invoke(", "Invoke()", "mouse_event", "SetCursorPos",
+                "0x00F5", "BM_CLICK", "PostMessage", "SendKeys",
+                "LVM_SETITEMSTATE"):
+        assert tok not in src, f"只读探针不得出现 {tok}"
 
 
 def test_ugr_ps1_recalc_completion_waits_for_value_emergence():
