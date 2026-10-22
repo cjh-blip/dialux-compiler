@@ -345,8 +345,10 @@ if ($tabs2 -ne $null) {
 # report word (export as second choice), click it, and let the print button
 # -- which exists ONLY on the report page (four guns of evidence) -- decide
 # pass. Nothing resolution-hardcoded: the row line and the span come from
-# live TabItems (span extends +320px right for the three label-only tabs;
-# structural margin, not a coordinate); 8px is the step; EVERY named hit
+# ONE picked row of live TabItems (ninth batch -- cluster into rows and pick
+# the mode bar, see ROW PICK below; span extends +320px right of the picked
+# row for the three label-only tabs; structural margin, not a coordinate);
+# 8px is the step; EVERY named hit
 # lands in the scene and a miss fails with that list -- never a blind click.
 # Already on the report page (print_btn=1 before any click) short-circuits.
 $printBtn = 0
@@ -355,6 +357,8 @@ if ($pe0 -ne $null) { $printBtn = 1 }
 $hitWord = '-'
 $clickVia = '-'
 $hits = @()
+$rowsScene = 'na'   # row-set summary 'centerY:count;...' (ninth batch; AGG diagnostics demoted to this)
+$rowGeo = 'na'      # picked row geometry y/x-range (ninth batch)
 if ($printBtn -eq 0) {
     $repW = -join ([char[]]@(0x62A5, 0x8868))   # report
     $expW = -join ([char[]]@(0x5BFC, 0x51FA))   # export
@@ -362,26 +366,132 @@ if ($printBtn -eq 0) {
     if ($tabs2 -ne $null) {
         try { $tabRow = $tnItems } catch { $tabRow = @() }
     }
-    $minX = [double]::MaxValue
-    $maxX = 0.0
-    $midY = 0.0
-    $n4 = 0
+    # ---- ROW PICK (ninth batch): cluster TabItems into rows, pick ONE ----
+    # Eighth-gun probe closed the line-level root cause (no re-guessing):
+    # ModeSelectionTabControl's rect covers the whole workspace
+    # (112,158,1424,760) and its 23 TabItems are left tool strip 16 + right
+    # tool strip 3 + mode bar 4 (tool tabs and mode tabs share one control).
+    # The eighth batch averaged all 22 readable rects -> midY=381 (that line
+    # answers window title / tool tab names / the pseudo-color button), the
+    # scan never touched the mode bar (true centerY 179.5) and scanX0=104
+    # (left strip x=112 dragged to the window edge). Probe scene: AGG n=22
+    # midY=381 scanX0=104 vs hits first x=104 equal VERBATIM; the four mode
+    # bar items all carry centerY=179.5.
+    # Fix: cluster by centerY (ascending, +-8 tolerance), then pick ONE row
+    # and take minX/maxX/centerY from THAT row only -- never the aggregate:
+    #   layer 1 -- the row whose Name carries 'ResultMode'. Only one of the
+    #     four bar items carries the dotted namespace prefix (the other
+    #     three are bare names), so a prefix-wide match would keep a single
+    #     ITEM instead of a row; 'ResultMode' anchors exactly that item and
+    #     the whole row it sits in.
+    #   layer 2 -- among rows with >=2 TabItems take the smallest centerY,
+    #     span desc as tie-break (span desc alone would pick a tool row:
+    #     left+right strips share centerY and span the full width).
+    #   both empty -> modebar-row-empty n= rows= scene, FAIL right here:
+    #     no fallback to the unfiltered aggregate, no scan, no blind click.
+    # The +320 span margin applies to the PICKED row (export/report/brand
+    # labels have no UIA element and sit right of the 4 tabs' right edge --
+    # the margin is their only chance to be hit-tested).
+    $items4 = @()
     for ($q = 0; $q -lt $tabRow.Count; $q++) {
         try {
             $r4 = $tabRow.Item($q).Current.BoundingRectangle
             if ($r4.Width -le 0) { continue }
-            if ($r4.X -lt $minX) { $minX = $r4.X }
-            if (($r4.X + $r4.Width) -gt $maxX) { $maxX = $r4.X + $r4.Width }
-            $midY += $r4.Y + ($r4.Height / 2.0)
-            $n4++
+            $nmA = ''
+            try { $nmA = [string]$tabRow.Item($q).Current.Name } catch { $nmA = '' }
+            $items4 += [pscustomobject]@{
+                X    = [double]$r4.X
+                R    = [double]($r4.X + $r4.Width)
+                Cy   = [double]($r4.Y + ($r4.Height / 2.0))
+                Name = $nmA
+            }
         } catch { $readErr++ }
     }
-    if ($n4 -eq 0) {
+    if ($items4.Count -eq 0) {
         Fail 'report-mode' ("modebar-scan-miss hits='no-tabrow' read_err={0} legacy={1}" -f $readErr, $legacy)
+    }
+    $items4 = @($items4 | Sort-Object -Property Cy)
+    $rows4 = @()
+    $curRow = @()
+    $anchorCy = 0.0
+    foreach ($itA in $items4) {
+        if ($curRow.Count -eq 0) {
+            $curRow = @($itA)
+            $anchorCy = $itA.Cy
+        } elseif ([math]::Abs(($itA.Cy - $anchorCy)) -le 8.0) {
+            $curRow += $itA
+        } else {
+            $rows4 += ,$curRow
+            $curRow = @($itA)
+            $anchorCy = $itA.Cy
+        }
+    }
+    if ($curRow.Count -gt 0) { $rows4 += ,$curRow }
+    $rowTxts = @()
+    foreach ($rowA in $rows4) {
+        $cySum = 0.0
+        foreach ($itB in $rowA) { $cySum += $itB.Cy }
+        $cyAvg = ($cySum / $rowA.Count)
+        $cyTxt = $cyAvg.ToString('0.#', [System.Globalization.CultureInfo]::InvariantCulture)
+        $rowTxts += ("{0}:{1}" -f $cyTxt, $rowA.Count)
+    }
+    $rowsScene = ($rowTxts -join ';')
+    if ($rowTxts.Count -gt 16) {
+        $rowsScene = (($rowTxts[0..15]) -join ';') + ';+more'
+    }
+    $pick4 = $null
+    $pickWhy = 'none'
+    foreach ($rowA in $rows4) {
+        $anchorHit = $false
+        foreach ($itB in $rowA) {
+            if ($itB.Name -match 'ResultMode') { $anchorHit = $true; break }
+        }
+        if ($anchorHit) { $pick4 = $rowA; $pickWhy = 'resultmode-row'; break }
+    }
+    if ($pick4 -eq $null) {
+        $candA = @()
+        foreach ($rowA in $rows4) {
+            if ($rowA.Count -lt 2) { continue }
+            $mnB = [double]::MaxValue
+            $mxB = 0.0
+            $cySum = 0.0
+            foreach ($itB in $rowA) {
+                if ($itB.X -lt $mnB) { $mnB = $itB.X }
+                if ($itB.R -gt $mxB) { $mxB = $itB.R }
+                $cySum += $itB.Cy
+            }
+            $candA += [pscustomobject]@{
+                Row  = $rowA
+                Cy   = ($cySum / $rowA.Count)
+                Span = ($mxB - $mnB)
+            }
+        }
+        if ($candA.Count -gt 0) {
+            $bestA = $candA | Sort-Object -Property @{Expression = 'Cy'; Ascending = $true}, @{Expression = 'Span'; Descending = $true} | Select-Object -First 1
+            $pick4 = $bestA.Row
+            $pickWhy = 'min-centerY-span'
+        }
+    }
+    if ($pick4 -eq $null) {
+        # No row qualified (empty row set or no row passed both layers):
+        # FAIL here with the full row scene. This code must NEVER fall back
+        # to the unfiltered aggregate scan (ninth batch, negative contract).
+        Fail 'report-mode' ("modebar-row-empty n={0} rows='{1}' read_err={2} legacy={3} print_btn={4}" -f $items4.Count, $rowsScene, $readErr, $legacy, $printBtn)
+    }
+    $minX = [double]::MaxValue
+    $maxX = 0.0
+    $midY = 0.0
+    $n4 = 0
+    foreach ($itC in $pick4) {
+        if ($itC.X -lt $minX) { $minX = $itC.X }
+        if ($itC.R -gt $maxX) { $maxX = $itC.R }
+        $midY += $itC.Cy
+        $n4++
     }
     $midY = [int]($midY / $n4)
     $scanX0 = [int]($minX - 8)
     $scanX1 = [int]($maxX + 320)
+    $rowGeo = ("y={0} x={1}..{2} n={3} pick={4}" -f $midY, $scanX0, $scanX1, $n4, $pickWhy)
     $hitRep = $null
     $hitRepX = 0
     $hitExp = $null
@@ -409,7 +519,7 @@ if ($printBtn -eq 0) {
     if ($target4 -eq $null) {
         # nothing on the strip carried the words -- scene = what the pixels
         # DID answer (names may be empty there; the list says so)
-        Fail 'report-mode' ("modebar-scan-miss hits='{0}' legacy={1} print_btn={2}" -f (($hits -join ' ; ')), $legacy, $printBtn)
+        Fail 'report-mode' ("modebar-scan-miss hits='{0}' legacy={1} print_btn={2} rows='{3}' row='{4}'" -f (($hits -join ' ; ')), $legacy, $printBtn, $rowsScene, $rowGeo)
     }
     # click: Invoke when available, else the element center, else the exact
     # scanned pixel (label-only tabs may carry no element bounds)
@@ -478,7 +588,7 @@ if ($printBtn -ne 1) {
     # report page did not confirm -- full scene, no conclusion words
     Fail 'report-mode' ("report-mode-not-confirmed via=modebar-scan word={0} click={1} selected='{2}' readback={3} legacy={4} target_selected={5} target_pat={6} same={7} container={8} anc={9} crect={10} coff={11} read_err={12} print_btn={13} tfind={14} hits='{15}'" -f $hitWord, $clickVia, (Esc $selName), $readback, $legacy, $targetSel, $targetPat, $sameRid, $containerVia, $ancState, $crect, $coff, $readErr, $printBtn, $tfind, (($hits -join ' ; ')))
 }
-Emit 'report-mode' 'ok' ("via=modebar-scan word={0} click={1} selected='{2}' same={3} print_btn=1 legacy={4} tfind={5}" -f $hitWord, $clickVia, (Esc $selName), $sameRid, $legacy, $tfind)
+Emit 'report-mode' 'ok' ("via=modebar-scan word={0} click={1} selected='{2}' same={3} print_btn=1 legacy={4} tfind={5} rows='{6}' row='{7}'" -f $hitWord, $clickVia, (Esc $selName), $sameRid, $legacy, $tfind, $rowsScene, $rowGeo)
 
 # ------------------------------------------------------- 2) trigger print
 # Measured 2026-10-19 E2: the entry id is ButtonPrintDocument, and a raw

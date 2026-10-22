@@ -228,7 +228,9 @@ def test_report_ps1_fourth_way_scan_gate():
     → 点击（Invoke/中心/像素三级）→ **过闸唯一判据＝print_btn**（只在报表
     页存在，四枪证据）；旧 tab-name 路降为 legacy 记录不再动作（根因＝
     ResultMode TabItem 视觉标签就是计算元件页，选它=切错页）；点后读回
-    双路四态保留为现场；扫描找不到则带命中清单人话失败，不盲点。"""
+    双路四态保留为现场；扫描找不到则带命中清单人话失败，不盲点。
+    第九批（第八枪行级根因）：聚合先按 centerY 聚类成行、行选双层判据、
+    几何只取选中行，两层都空→modebar-row-empty 不退全量；+320 余量保留。"""
     t = _src(REPORT_PS1)
     # 第四路四要素
     assert "FromPoint" in t, "命中测试横扫（信任像素不信任 id/名字）"
@@ -259,9 +261,39 @@ def test_report_ps1_fourth_way_scan_gate():
     assert "= '?'" not in t, "四态闭集不许 ? 哨兵"
     assert "'?unreadable'" not in t, "名字字段同口径"
     assert "$targetNow" in t, "target 重定位保留为只读证据"
-    # 失败码不预设结论（两种 Fail 都查）
+    # ---- 第九批（第八枪行级根因）：行聚类 + 行选双层判据 ----
+    # 探针铁证：ModeSelectionTabControl 盖整个工作区，23 TabItem＝左16＋右3
+    # ＋模式栏4；旧码 22 项求均值 midY=381 扫错行。修＝先按 centerY 聚类
+    # 成行，再选一行、几何只取该行；行选两层都空→人话失败，不退全量扫描。
+    block = t[t.index("ROW PICK"):t.index("for ($sx = $scanX0")]
+    # 行聚类段存在（认代码结构不认行号）
+    assert "Sort-Object -Property Cy" in block, "先按 centerY 排序再分组"
+    assert "-le 8.0" in block, "centerY 聚类容差 +-8"
+    # 行选双层判据段存在
+    assert "-match 'ResultMode'" in block, "判据①：Name 命中 ResultMode 的那一行"
+    assert "'InteractionModes" not in block, (
+        "行选过滤不许用前缀匹配——四栏项只有一项带前缀，纯前缀匹配会只剩一行")
+    assert "Count -lt 2" in block, "判据②：TabItem 数 >=2 过滤"
+    assert "Descending = $true" in block, "判据②：横向跨度作次序"
+    # 新失败码在场 + rows= 诊断（AGG 降为行集合摘要）
+    assert "modebar-row-empty" in block, "两层都空的人话失败码在"
+    assert "rows=" in block and "n={0}" in block, "失败带 n= 与每行 centerY:条数"
+    # +320 结构余量过滤后必须保留（导出/报表/品牌库 UIA 无元素）
+    assert "+ 320" in block, "+320 结构余量在选中行的几何里"
+    # 负断言：空行集合必须 Fail 在扫描之前，绝不退回全量扫描
+    assert t.index("modebar-row-empty") < t.index("for ($sx = $scanX0"), (
+        "行选失败必须先于扫描 Fail")
+    assert "$midY += $r4.Y" not in t, "全量聚合求 midY 的旧码不许复活"
+    assert "$pick4 = $tabRow" not in t, "空行不许回退全量行集合（认 $pick4 几何）"
+    assert "foreach ($itC in $pick4)" in block, "过滤后行内几何取自选中行"
+    # 既有字段与失败码前缀照旧（跨枪可比性）
+    assert "modebar-scan-miss hits='" in t
+    assert "legacy={1} print_btn={2} rows=" in t, "scan-miss 尾追 rows= 不破旧字段"
+    assert "print_btn=1 legacy={4} tfind={5} rows=" in t, "ok 场景带回 rows=/行几何"
+    # 失败码不预设结论（三种 Fail 都查）
     fail_lines = [ln for ln in t.splitlines()
-                  if "report-mode-not-confirmed" in ln or "modebar-scan-miss" in ln]
+                  if ("report-mode-not-confirmed" in ln or "modebar-scan-miss" in ln
+                      or "modebar-row-empty" in ln)]
     assert fail_lines, "至少一种人话失败码"
     for fl in fail_lines:
         for word in ("bounce", "revert", "switched-back"):
