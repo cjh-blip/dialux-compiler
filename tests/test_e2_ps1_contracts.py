@@ -410,6 +410,94 @@ def test_saveas_probe_is_readonly():
         assert tok not in src, f"只读探针不得出现 {tok}"
 
 
+def test_report_ps1_step_watchdog_and_stage_timeouts():
+    r"""第十二批组1（第十一枪挂死 2/2、600s 看门狗前无码面）：死区必须换成码
+    面——阻塞场景必须 Fail 在内层超时码 printer-step-hang-timeout，绝不允许
+    再还一片 600s 死区。双层结构：L2 步级 watchdog（120s 纯 .NET timer 线程
+    直写 STEP 行 + Environment.Exit，回调不跑 PS 代码）；L1 runspace 天花板
+    盖住无界跨进程调用（UIA 树/spooler）；列表探测循环 15s 总预算；根因三嫌
+    疑不预设，哪条挂都要出码。"""
+    t = _src(REPORT_PS1)
+    # L2 watchdog：布防在步入口（Wait-Dialog 之前）、预算 120s << 600s
+    assert "[RP.U]::WArm(120000, 'report-printer')" in t, "步入口布防与预算值"
+    assert t.index("[RP.U]::WArm(") < t.index("$hDlg1 = Wait-Dialog $DialogTimeoutMs ([IntPtr]::Zero)"), (
+        "watchdog 必须在 printer 步入口（含 Wait-Dialog）之前布防")
+    assert "600000" not in t, "不许把 shell 预算当自己的上限"
+    # 回调纯 .NET：码面模板 + 强退（回调里禁止 PS 代码——不合法线程）
+    assert "printer-step-hang-timeout stage=watchdog last=" in t, "watchdog 码面字段"
+    for fld in ("elapsed=", "fg='", "target=0x", "budget="):
+        assert fld in t, f"超时码定位字段 {fld} 不在"
+    assert "Environment.Exit(1)" in t, "回调强退（不靠 PS exit）"
+    assert "Console.Out.Flush" in t, "码面 flush 后才退"
+    # 每个成功出口前 disarm（两处 ok：.pdf 直达支 + 双闸支）
+    assert t.count("[RP.U]::WDisarm()") == 2, "两处 ok 前各一次 Disarm"
+    assert t.index("[RP.U]::WDisarm()") < t.index("Emit 'report-printer' 'ok'"), "首个 Disarm 先于首个 ok"
+    assert t.rindex("[RP.U]::WDisarm()") < t.rindex("Emit 'report-printer' 'ok'"), "双闸支 Disarm 先于其 ok"
+    # L1：无界跨进程调用的 runspace 天花板 + 超时出同名码
+    assert t.count("Invoke-StageTimeout") >= 3, "定义 + UIA + spooler 两个调用点"
+    assert "AsyncWaitHandle.WaitOne" in t, "天花板本体"
+    assert "'uia-dialog-text'" in t and "'default-printer'" in t, "L1 两个 stage 名"
+    assert "stage=win32-list elapsed=" in t, "列表探测总预算超限先于看门狗出码"
+    assert "15000" in t, "单次列表探测预算 15s（settle 重读各自有界）"
+    assert "$ps.Stop()" not in t, "超时路径禁 Stop（停一个卡住的调用本身会卡）"
+    # stage 标记：watchdog 的 last= 分诊靠它们
+    for mk in ("WMark('wait-dialog')", "WMark('uia-dialog-text')", "WMark('win32-list-read')",
+               "WMark('printer-select-msg')", "WMark('print-click')", "WMark('gate-save-appear')"):
+        assert mk in t, f"stage 标记 {mk} 不在"
+
+
+def test_report_ps1_message_first_foreground_backup_only():
+    r"""第十二批组2（打嫌疑①）：选中与点击改消息驱动优先，前台依赖从主路
+    移除（只存在于 rect 备路）；BM_CLICK 本身是消息投递、gate 块零前台。
+    开头 AttachThreadInput 组合保留不删（时间线已证 mode/print 两步跑过、
+    非本挂点；删共享代码会波及其他步骤——红灯不碰）。"""
+    t = _src(REPORT_PS1)
+    # C# 分工：ListSelect=纯消息（无矩形/无鼠标），ListRectClick=备路
+    sel_blk = t[t.index("public static string ListSelect"):t.index("public static string ListRectClick")]
+    rect_blk = t[t.index("public static string ListRectClick"):t.index("private static bool ClickItemRect")]
+    assert "ClickItemRect" not in sel_blk, "主路选中不得含矩形点击"
+    assert "SetCursorPos" not in sel_blk, "主路选中不得动鼠标"
+    assert "0x102A" in sel_blk, "lv 主路＝LVM_SETITEMSTATE 消息"
+    assert "msg-not-stuck" in sel_blk, "消息未生效时的备路触发值"
+    assert sel_blk.index("0x102A") < sel_blk.index("msg-not-stuck"), "先消息后判定"
+    assert "ClickItemRect" in rect_blk and "0x100E" in rect_blk, "矩形备路保留在 ListRectClick"
+    # PS 主路：前台零依赖——标记锁死前台只夹在备路标记与备路点击之间
+    assert t.index("[RP.U]::WMark('printer-select-msg')") < t.index("SetForegroundWindow($hDlg1)"), (
+        "主路选中标记必须先于任何前台操作")
+    assert t.index("[RP.U]::WMark('rect-backup-foreground')") < t.index("SetForegroundWindow($hDlg1)") < t.index("[RP.U]::ListRectClick"), (
+        "前台只出现在备路标记与备路点击之间")
+    assert "never a precondition of the main route" in t, "主路无前台的声明在场"
+    # gate 块（BM_CLICK 所在）零前台：打印按钮走消息投递
+    g0 = t.index("if ($printerOk) {")
+    g1 = t.index("Emit 'report-printer' 'ok'", g0)
+    gate = t[g0:g1]
+    assert "0x00F5" in gate, "BM_CLICK 在 gate 块"
+    assert "SetForegroundWindow" not in gate, "gate 块不得依赖前台"
+    # 开头组合保留（共享代码不删——时间线论证见记账）
+    assert "AttachThreadInput" in t, "开头前台组合保留，不波及 mode/print"
+    assert t.count("SetForegroundWindow") == 3, "声明1＋开头1＋备路1，主路已移除"
+
+
+def test_report_ps1_no_regression_of_batch_10_11_primitives():
+    r"""第十二批组3：第十/十一批原语不回归——SafeSend 计数、双闸时序、
+    800ms settle、pinned 硬停、&P 分类、LVM wParam 双位、probe 取证全部
+    照旧（既有测试同时全绿即为交叉验证）。"""
+    t = _src(REPORT_PS1)
+    assert t.count("SafeSend(") >= 22, "SafeSend 消息封存不回退（拆分只移宿主不减）"
+    assert "Start-Sleep -Milliseconds 800" in t, "settle 只读重读保留"
+    assert "printer-combo-id-not-found" in t, "pinned 有值即硬停保留"
+    assert "'&P'" in t and "'&S'" in t, "实测加速键分类保留"
+    assert "0x1073, (IntPtr)i" in t, "LVM_GETITEMTEXTW wParam=索引保留"
+    assert "ListReadInfo" in t and "probe='" in t, "逐项 rc 取证保留"
+    assert "+ 320" in t, "+320 余量未碰（边界）"
+    # 双闸时序（第十批断言的同一语义，本批插入 WMark/WDisarm 不得破序）
+    i_wait = t.index("$hSave = Wait-Dialog $DialogTimeoutMs $hDlg1")
+    i_fail_save = t.index("Fail 'report-save' 'save-dialog-not-found'")
+    assert i_wait < i_fail_save < t.rindex("Emit 'report-printer' 'ok'"), "双闸时序不回归"
+    # 回读在 BM_CLICK 之前（第十批原断言语义）
+    assert t.index("ListSelText") < t.index("0x00F5"), "先回读后点打印不回归"
+
+
 def test_ugr_ps1_recalc_completion_waits_for_value_emergence():
     """重算假完成沿（4d 附带发现，via=result sec=12 返回时面板全 '-'）：
     res_before 有值时，完成必须先观察到清场（dashSeen＝行在值没了的读，

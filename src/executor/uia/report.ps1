@@ -103,6 +103,53 @@ namespace RP {
       return (IntPtr)((long)res);
     }
 
+    // ---- twelfth batch: step watchdog (L2) + stage marks. The eleventh shot
+    // ---- hung report-printer 2/2 with NO step line at all -- the 600s shell
+    // ---- watchdog killed the process before any code face existed. Arm at
+    // ---- step entry, disarm before each ok; if the main thread is stuck at
+    // ---- ANY point (UIA call, foreground input, pipe -- root cause not
+    // ---- assumed), a pure-.NET timer thread writes the fail line straight to
+    // ---- stdout and force-exits. The callback runs NO PowerShell code (not
+    // ---- legal off the pipeline thread): Console write + Environment.Exit
+    // ---- only, both .NET. Field names mirror the L1 timeout code so the
+    // ---- two faces are indistinguishable in the log.
+    public static string LastStage = "printer-start";
+    private static System.Threading.Timer wTimer;
+    private static int wStartTick;
+    private static IntPtr wTarget;
+    private static string wStep = "report-printer";
+    public static void WMark(string stage) { LastStage = stage; }
+    public static void WTarget(IntPtr h) { wTarget = h; }
+    public static void WArm(int budgetMs, string stepName) {
+      wStartTick = Environment.TickCount;
+      wStep = stepName;
+      if (wTimer != null) { wTimer.Dispose(); wTimer = null; }
+      wTimer = new System.Threading.Timer(delegate(object s) {
+        int elapsed = Environment.TickCount - wStartTick;
+        string fg = "?";
+        try {
+          IntPtr fh = GetForegroundWindow();
+          int fpid = 0;
+          GetWindowThreadProcessId(fh, ref fpid);
+          System.Text.StringBuilder tb = new System.Text.StringBuilder(96);
+          GetWindowText(fh, tb, 96);
+          string title = tb.ToString().Replace('\r', ' ').Replace('\n', ' ');
+          if (title.Length > 40) title = title.Substring(0, 40);
+          fg = fpid + ":" + title;
+        } catch { }
+        try {
+          Console.WriteLine("STEP " + wStep + " fail printer-step-hang-timeout stage=watchdog last="
+            + LastStage + " elapsed=" + elapsed + " fg='" + fg + "' target=0x"
+            + wTarget.ToInt64().ToString("x") + " budget=" + budgetMs);
+          Console.Out.Flush();
+        } catch { }
+        Environment.Exit(1);
+      }, null, budgetMs, System.Threading.Timeout.Infinite);
+    }
+    public static void WDisarm() {
+      if (wTimer != null) { wTimer.Dispose(); wTimer = null; }
+    }
+
     // "hwnd|class|text|l,t,r,b" per child (recursive): the scene that travels
     // back in failures; the rect lets the caption-anchored container pick
     // prove itself geometrically instead of by class name.
@@ -247,11 +294,13 @@ namespace RP {
       if (i < 0) return "";
       return ListItemByChannel(h, ch, i);
     }
-    // Select by control type. cb/lb: SETCURSEL + the parent's WM_COMMAND
+    // Select by control type -- MESSAGE ONLY (twelfth batch): no foreground,
+    // no mouse, no rect. cb/lb: SETCURSEL + the parent's WM_COMMAND
     // notification (dialogs read selection lazily; CBN/LBN_SELCHANGE = 1).
-    // lv: LVIS selection-state message first, then a real click on the item
-    // rect so the dialog receives LVN_ITEMCHANGED exactly like a human click.
-    // The .ps1 reads the selection back before ever clicking Print.
+    // lv: LVIS selection-state message; returns 'msg-not-stuck' when the
+    // message did not take, which is the .ps1's cue to run the rect-click
+    // backup (foreground arranged THERE, never on this path). The read-back
+    // gate in the .ps1 is unchanged and still gates the Print click.
     public static string ListSelect(IntPtr h, string ch, int i) {
       if (ch == "cb") {
         SafeSend(h, 0x014E, (IntPtr)i, IntPtr.Zero);            // CB_SETCURSEL
@@ -269,7 +318,6 @@ namespace RP {
       }
       int cap = Marshal.SizeOf(typeof(LVITEMW));
       IntPtr ps = Marshal.AllocHGlobal(cap);
-      IntPtr pr = Marshal.AllocHGlobal(cap);
       try {
         LVITEMW st = new LVITEMW();
         st.mask = 0x0008;   // LVIF_STATE
@@ -278,6 +326,20 @@ namespace RP {
         Marshal.StructureToPtr(st, ps, false);
         SafeSend(h, 0x102A, IntPtr.Zero, ps);                      // LVM_SETITEMSTATE
         if (ListSelIndex(h, "lv") == i) return "set-itemstate";
+        return "msg-not-stuck";
+      } finally { Marshal.FreeHGlobal(ps); }
+    }
+    // Backup path ONLY (twelfth batch): ensure-visible + item-rect real click,
+    // invoked by the .ps1 after the message path did not stick. The .ps1
+    // arranges the foreground immediately before calling this -- that is the
+    // ONLY place in the printer step where foreground state is touched. Dual
+    // rect-layout attempts kept from the previous batch; the read-back gate
+    // after the click is what keeps a mis-click from reaching Print.
+    public static string ListRectClick(IntPtr h, string ch, int i) {
+      if (ch != "lv") return "no-backup";   // cb/lb are message-only by design
+      int cap = Marshal.SizeOf(typeof(LVITEMW));
+      IntPtr pr = Marshal.AllocHGlobal(cap);
+      try {
         SafeSend(h, 0x100F, (IntPtr)i, IntPtr.Zero);               // LVM_ENSUREVISIBLE
         // attempt A: wParam = item index, RECT written at lParam
         Marshal.Copy(new byte[cap], 0, pr, cap);
@@ -290,7 +352,7 @@ namespace RP {
         SafeSend(h, 0x100E, IntPtr.Zero, pr);
         if (ClickItemRect(h, pr)) return "rect-click";
         return "no-rect";
-      } finally { Marshal.FreeHGlobal(ps); Marshal.FreeHGlobal(pr); }
+      } finally { Marshal.FreeHGlobal(pr); }
     }
     private static bool ClickItemRect(IntPtr h, IntPtr buf) {
       int l = Marshal.ReadInt32(buf, 0);
@@ -404,6 +466,43 @@ function Get-DlgUiText([IntPtr]$h) {
         return ($head + ' ' + $sb.ToString())
     } catch { return '' }
 }
+function Get-FgLabel() {
+    # 'pid:title' of the foreground window -- the context field both timeout
+    # faces (L1 fail line and L2 watchdog line) carry.
+    $h = [RP.U]::GetForegroundWindow()
+    if ($h -eq [IntPtr]::Zero) { return '0:none' }
+    $fpid = 0
+    [void][RP.U]::GetWindowThreadProcessId($h, [ref]$fpid)
+    $sb = New-Object System.Text.StringBuilder 96
+    [void][RP.U]::GetWindowText($h, $sb, 96)
+    $t = $sb.ToString() -replace '[\r\n]+', ' '
+    if ($t.Length -gt 40) { $t = $t.Substring(0, 40) }
+    return ('{0}:{1}' -f $fpid, $t)
+}
+function Invoke-StageTimeout([string]$stage, [string]$fnBody, [string]$call, [int]$timeoutMs, [string]$targetHex) {
+    # L1 hard timeout around the genuinely unbounded cross-process calls (UIA
+    # tree walk, spooler query). A fresh runspace executes the helper text +
+    # the call under a WaitOne ceiling; on timeout the fail line is emitted
+    # FIRST (code face before the 600s shell watchdog, printer-step-hang-
+    # timeout with stage/elapsed/fg/target) and the process exits. Deliberately
+    # NO Stop()/Dispose on the timeout path -- stopping a stuck COM call can
+    # itself block; the exit tears everything down instead.
+    $rs = [runspacefactory]::CreateRunspace()
+    $rs.Open()
+    $ps = [powershell]::Create()
+    $ps.Runspace = $rs
+    [void]$ps.AddScript($fnBody + "`n" + $call)
+    $ih = $ps.BeginInvoke()
+    if (-not $ih.AsyncWaitHandle.WaitOne($timeoutMs)) {
+        Fail 'report-printer' ("printer-step-hang-timeout stage={0} elapsed={1} fg='{2}' target={3}" -f $stage, $timeoutMs, (Get-FgLabel), $targetHex)
+    }
+    $out = $null
+    try { $out = $ps.EndInvoke($ih) } catch { $out = $null }
+    try { $ps.Dispose() } catch { }
+    try { $rs.Close() } catch { }
+    if ($out -eq $null -or $out.Count -eq 0) { return '' }
+    return [string]$out[0]
+}
 function Get-KidClassSummary([string[]]$kids) {
     # Compact 'class:count,...' summary of the dialog's Win32 children -- the
     # scene that travels back in failures when nothing is classifiable.
@@ -480,8 +579,16 @@ function Read-W32PrinterList([IntPtr]$h, [string[]]$kids, [string]$pinId) {
     }
     if ($cands.Count -eq 0) { $cands = $auto }   # class-blind probe fallback
     $traces = @()
+    # Twelfth batch: total budget for the whole probe loop. Single messages
+    # are already bounded by SafeSend (3s); this caps the SUM so a wall of
+    # candidates x items can never reach the shell watchdog -- on breach we
+    # fail HERE with the same timeout code face (stage=win32-list) + trace.
+    $budget = [Diagnostics.Stopwatch]::StartNew()
     $names0 = @(); $ctrl0 = [IntPtr]::Zero; $ch0 = ''
     foreach ($cd in ($cands | Sort-Object -Property pri)) {
+        if ($budget.ElapsedMilliseconds -gt 15000) {
+            Fail 'report-printer' ("printer-step-hang-timeout stage=win32-list elapsed={0} fg='{1}' target=0x{2} probe='{3}'" -f $budget.ElapsedMilliseconds, (Get-FgLabel), $h.ToInt64().ToString('x'), (($traces -join ' ; ').Substring(0, [Math]::Min(200, ($traces -join ' ; ').Length))))
+        }
         $ch = [RP.U]::ListChannel($cd.hw)
         if ($ch -eq '') { $traces += ("{0}:no-channel" -f $cd.cls); continue }
         $names = @([RP.U]::ListRead($cd.hw, $ch))
@@ -974,12 +1081,33 @@ Emit 'report-print' 'ok' ("via=" + $prVia)
 #   - every failure carries the Win32 child scene + default printer; no blind
 #     clicks, and report-printer says ok ONLY after the print dialog closed
 #     and the save window appeared.
+#   - twelfth batch (eleventh shot: step hung 2/2, 600s shell watchdog, NO
+#     code face): step watchdog armed at entry (120s pure-.NET timer thread
+#     writes printer-step-hang-timeout with stage/elapsed/fg/target and
+#     force-exits -- legal off the pipeline thread because it runs no PS),
+#     L1 runspace ceilings on the unbounded cross-process calls (UIA tree,
+#     spooler), a 15s total budget on the list probe loop, stage marks at
+#     every sub-action for watchdog localization. Root cause is NOT assumed:
+#     whichever of the three suspicions sticks, a code face comes back.
+[RP.U]::WArm(120000, 'report-printer')
+[RP.U]::WTarget([IntPtr]::Zero)
+[RP.U]::WMark('wait-dialog')
 $hDlg1 = Wait-Dialog $DialogTimeoutMs ([IntPtr]::Zero)
 if ($hDlg1 -eq [IntPtr]::Zero) { Fail 'report-printer' 'print-dialog-not-found' }
-$txt1 = Get-DlgUiText $hDlg1
+[RP.U]::WTarget($hDlg1)
+[RP.U]::WMark('uia-dialog-text')
+$uiaHex = ('0x{0:x}' -f $hDlg1.ToInt64())
+# L1: the UIA tree walk is the one call in this step that can block forever
+# on a foreign provider (twelfth-batch suspicion, not a conclusion) -- fresh
+# runspace, 10s ceiling, timeout fails with the same code face.
+$txt1 = Invoke-StageTimeout 'uia-dialog-text' ('function Get-DlgUiText([IntPtr]$h) {' + [string](Get-Command Get-DlgUiText).ScriptBlock + '}') ('Get-DlgUiText ([IntPtr]{0})' -f $hDlg1.ToInt64()) 10000 $uiaHex
+[RP.U]::WMark('win32-scene')
 $kids = [RP.U]::ChildScene($hDlg1)
 $classSummary = Get-KidClassSummary $kids
-$defName = [RP.U]::GetDefaultPrinterName()
+[RP.U]::WMark('default-printer')
+# L1: spooler RPC can stall on a wedged service -- 5s ceiling, same face.
+$defName = Invoke-StageTimeout 'default-printer' '' '[RP.U]::GetDefaultPrinterName()' 5000 $uiaHex
+[RP.U]::WMark('btn1-text')
 $btn1t = [RP.U]::DlgItemText($hDlg1, 1)
 $snip = ($txt1 -replace '\s+', ' ')
 if ($snip.Length -gt 120) { $snip = $snip.Substring(0, 120) }
@@ -993,23 +1121,36 @@ $pickIdx = -1
 if ($btn1t -match '&P' -or ($btn1t -eq '' -and $txt1 -match 'FolderView|Print to PDF|OneNote|Brother')) {
     # this is the print dialog: read the list (one settle re-read, the list
     # fills after the dialog paints), then pick the PDF entry.
+    [RP.U]::WMark('win32-list-read')
     $listInfo = Read-W32PrinterList $hDlg1 $kids $PrinterComboId
     if (@($listInfo.names).Count -eq 0) {
+        [RP.U]::WMark('win32-list-settle')
         Start-Sleep -Milliseconds 800
         $listInfo = Read-W32PrinterList $hDlg1 $kids $PrinterComboId
     }
     $probe = [string]$listInfo.probe
     $listNames = (@($listInfo.names) -join ';')
     if ($listNames -ne '' -and $listNames -match 'Microsoft Print to PDF') {
-        # main route: select in the Win32 list, then READ BACK the selection --
-        # the click on Print only happens after this check passes.
+        # main route: MESSAGE select + read-back -- no foreground, no mouse on
+        # this path (twelfth batch: the eleventh shot's foreground exposure is
+        # removed from the main route; Print stays gated by the read-back).
         for ($ci = 0; $ci -lt @($listInfo.names).Count; $ci++) {
             if ($listInfo.names[$ci] -match 'Microsoft Print to PDF') { $pickIdx = $ci; break }
         }
-        $fg = [RP.U]::GetForegroundWindow()
-        if ($fg -ne $hDlg1) { [void][RP.U]::SetForegroundWindow($hDlg1); Start-Sleep -Milliseconds 300 }
+        [RP.U]::WMark('printer-select-msg')
         $selVia = [RP.U]::ListSelect($listInfo.ctrl, $listInfo.ch, $pickIdx)
         $readBack = [RP.U]::ListSelText($listInfo.ctrl, $listInfo.ch)
+        if ($readBack -notmatch 'Microsoft Print to PDF') {
+            # backup path: rect real click. Foreground is arranged ONLY here
+            # (foreground is never a precondition of the main route), and the
+            # read-back gate below still decides whether Print is ever clicked.
+            [RP.U]::WMark('rect-backup-foreground')
+            $fg = [RP.U]::GetForegroundWindow()
+            if ($fg -ne $hDlg1) { [void][RP.U]::SetForegroundWindow($hDlg1); Start-Sleep -Milliseconds 300 }
+            [RP.U]::WMark('rect-backup-click')
+            $selVia = ('{0}+{1}' -f $selVia, [RP.U]::ListRectClick($listInfo.ctrl, $listInfo.ch, $pickIdx))
+            $readBack = [RP.U]::ListSelText($listInfo.ctrl, $listInfo.ch)
+        }
         if ($readBack -notmatch 'Microsoft Print to PDF') {
             Fail 'report-printer' ("printer-not-selectable-use-PrinterComboId via=win32-list ch={0} selvia={1} idx={2} readback='{3}' list='{4}' default='{5}' btn1='{6}' win32='{7}' probe='{8}' ui='{9}'" -f $listInfo.ch, $selVia, $pickIdx, $readBack, $listNames, $defName, $btn1t, $classSummary, $probe, $snip)
         }
@@ -1028,6 +1169,7 @@ if ($btn1t -match '&P' -or ($btn1t -eq '' -and $txt1 -match 'FolderView|Print to
     }
 } elseif ($btn1t -match '&S' -or $txt1 -match '\.pdf') {
     # the SAVE window came directly (no print dialog in between)
+    [RP.U]::WDisarm()
     Emit 'report-printer' 'ok' 'print-dialog-absent-default-is-pdf'
     $hSave = $hDlg1
 } else {
@@ -1035,10 +1177,13 @@ if ($btn1t -match '&P' -or ($btn1t -eq '' -and $txt1 -match 'FolderView|Print to
 }
 if ($printerOk) {
     # functional gate: after the click the print dialog must CLOSE and the save
-    # window must APPEAR -- "it was clicked" is never the ok.
+    # window must APPEAR -- "it was clicked" is never the ok. BM_CLICK is a
+    # message post: no foreground precondition anywhere in this block.
+    [RP.U]::WMark('print-click')
     $hPrint = [RP.U]::GetDlgItem($hDlg1, 1)          # measured: print button = GetDlgItem(1)
     if ($hPrint -eq [IntPtr]::Zero) { Fail 'report-printer' 'print-button-not-found' }
     [void][RP.U]::SendMessage($hPrint, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)   # BM_CLICK
+    [RP.U]::WMark('gate-printdlg-close')
     $gsw = [Diagnostics.Stopwatch]::StartNew()
     while ($gsw.ElapsedMilliseconds -lt 5000 -and [RP.U]::IsWindowVisible($hDlg1)) {
         Start-Sleep -Milliseconds 200
@@ -1046,8 +1191,10 @@ if ($printerOk) {
     if ([RP.U]::IsWindowVisible($hDlg1)) {
         Fail 'report-printer' ("print-dialog-still-open via={0} list='{1}' default='{2}' btn1='{3}' probe='{4}' ui='{5}'" -f $printerVia, $listNames, $defName, $btn1t, $probe, $snip)
     }
+    [RP.U]::WMark('gate-save-appear')
     $hSave = Wait-Dialog $DialogTimeoutMs $hDlg1     # the save window is the NEXT dialog
     if ($hSave -eq [IntPtr]::Zero) { Fail 'report-save' 'save-dialog-not-found' }
+    [RP.U]::WDisarm()
     Emit 'report-printer' 'ok' ("via={0} printer='Microsoft Print to PDF' selvia={1} ch={2} list='{3}' default='{4}'" -f $printerVia, $selVia, $listInfo.ch, $listNames, $defName)
 }
 
