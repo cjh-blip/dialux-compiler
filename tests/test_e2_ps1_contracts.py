@@ -300,6 +300,57 @@ def test_report_ps1_fourth_way_scan_gate():
             assert word not in fl.lower(), f"失败码预设了回切结论：{word}"
 
 
+def test_report_ps1_printer_step_win32_channel():
+    r"""第十批（第九枪 printer 死因，两采闭环）：打印对话框 UIA 树 30 Pane、
+    打印机列表 FolderView 零子项 → 旧 `$txt1 -match 打印机名` 结构上必不命中、
+    UIA combo 选择路不可达，全部死在 unclassified-dialog。改法：
+    - 分类走实测加速键（按钮 1 '&P'=打印对话框；'&S'/'\.pdf'=保存窗，先于
+      任何打印机话术排除保存窗——它自己的文件列表也是 FolderView）；
+    - 选择走 Win32 列表消息（E2 同型对话框 Win32 读到过列表内容），UIA 30 Pane
+      文本保留为 ui= 证据字段；-PrinterComboId 仍是有值即硬停的逃生舱；
+    - 辅路＝只读默认打印机恰为 PDF 直接点打印（GetDefaultPrinter，永不写系统设置）；
+    - 过闸＝打印框消失＋保存窗出现才 Emit ok（点了不算）；
+    - 失败码：unclassified-dialog 旧码保留（无信号 else 支），新码带 Win32 现场，
+      不盲点不绕闸。"""
+    t = _src(REPORT_PS1)
+    i0 = t.index("# ------------------------------------- 3) print dialog")
+    i1 = t.index("# ------------------------------------------------------- 4) save dialog")
+    block = t[i0:i1]
+    # 分类：实测加速键（'&P' 打印 / '&S' 保存 / '.pdf' 保存窗兜底）
+    assert "'&P'" in block, "打印对话框分类＝按钮 1 加速键 &P（实测 打印(&P)）"
+    assert "'&S'" in block, "保存窗分类＝&S（实测 保存(&S)）"
+    assert r"'\.pdf'" in block, "保存窗 .pdf 信号仍在（按钮文本读不到时的兜底）"
+    # 选择：Win32 列表通道（读/选/回读）＋现场
+    assert "function Read-W32PrinterList" in t, "列表读取函数在场"
+    for fn in ("ChildScene", "Get-KidClassSummary", "ListChannel", "ListRead"):
+        assert fn in t, f"Win32 助手 {fn} 不在"
+    assert "Read-W32PrinterList" in block
+    assert "ListSelect" in block and "ListSelText" in block, "选中后必须回读"
+    assert "GetDefaultPrinterName" in t, "辅路：默认打印机只读查询"
+    assert "Set-DefaultPrinter" not in t and "SetDefaultPrinter" not in t, (
+        "系统设置不许碰（只读查询有，写入无）")
+    # 点打印前必须完成回读确认（回读在 BM_CLICK 之前）
+    assert block.index("ListSelText") < block.index("0x00F5"), "先回读后点打印"
+    # 过闸：打印框消失 + 保存窗出现，才 Emit ok（点了不算）
+    assert "print-dialog-still-open" in block, "打印框消失是闸的一半"
+    i_wait = block.index("$hSave = Wait-Dialog $DialogTimeoutMs $hDlg1")
+    i_fail_save = block.index("Fail 'report-save' 'save-dialog-not-found'")
+    i_ok = block.rindex("Emit 'report-printer' 'ok'")
+    assert i_wait < i_fail_save < i_ok, "保存窗出现必须先于 printer ok"
+    # 失败码与证据（新码带现场，旧码保留可回溯）
+    for code in ("printer-list-win32-unreadable", "printer-not-in-win32-list",
+                 "printer-not-selectable-use-PrinterComboId",
+                 "unclassified-dialog", "print-dialog-not-found",
+                 "print-button-not-found"):
+        assert code in block, f"失败码 {code} 不在打印步块内"
+    assert "printer-combo-id-not-found" in t, "-PrinterComboId 有值即硬停的旧码保留"
+    assert "win32='" in block and "default='" in block, "失败带 Win32 现场＋默认打印机"
+    assert "ui='" in block, "UIA 30 Pane 文本仍是证据字段"
+    # 旧 UIA combo 选择路必须已删（第九枪已证结构上不可达的死路）
+    assert "$comboEl" not in block, "旧 UIA combo 路已随根因移除"
+    assert "ExpandCollapsePattern" not in block, "combo 展开选择同删"
+
+
 def test_ugr_ps1_recalc_completion_waits_for_value_emergence():
     """重算假完成沿（4d 附带发现，via=result sec=12 返回时面板全 '-'）：
     res_before 有值时，完成必须先观察到清场（dashSeen＝行在值没了的读，

@@ -44,6 +44,27 @@ _REPORT_STEPS = {
 DEFAULT_REPORT_DIR = "build/reports"
 
 
+def _decode_pipe(raw: bytes) -> str:
+    """解码 PowerShell 管道字节行（stdout STEP 与 stderr 日志同口径）。
+
+    根因（2026-10-22 第十批最小复现钉死，非猜测）：PowerShell 5.1 向重定向
+    管道写的非 ASCII 字节按**机器 OEM 码表**（中文 Windows＝GBK/cp936），
+    而本文件原来以文本模式按 utf-8 + errors='replace' 盲读（text 模式开管道）
+    ——第九枪 `ui=` 中文现场因此在读入瞬间变成 U+FFFD 序列（回执文件本体
+    EF BF BD，`title` 是 python 自产所以完好；损耗发生在 python 读子进程
+    流的解码环节，通道是 stdout，不在 stderr）。
+
+    两路都要会读：ps1 侧头部已声明 ``[Console]::OutputEncoding = UTF8``
+    （生效则走 utf-8 快路）；不生效时字节是 GBK——先 utf-8 严格、失败回退
+    gbk + replace，两条路都逐字可读、都不抛。见
+    tests/test_report_pipe_encoding.py 的往返与复现断言。
+    """
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw.decode("gbk", errors="replace")
+
+
 def extract_text_layer(pdf_path: str | Path, *, page_marker: bool = True) -> str:
     """用 PyMuPDF 提取 PDF 文本层；``===== PAGE n =====`` 为页分隔。
 
@@ -122,17 +143,14 @@ def export_report(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            bufsize=1,
         )
     except OSError as exc:
         raise RuntimeError(f"起不了 PowerShell：{exc}") from exc
 
     assert proc.stdout is not None
     cancelled = False
-    for line in proc.stdout:
+    for raw_line in proc.stdout:
+        line = _decode_pipe(raw_line)
         if cancel_check is not None and cancel_check():
             proc.kill()
             cancelled = True
@@ -169,7 +187,7 @@ def export_report(
     except subprocess.TimeoutExpired:
         proc.kill()
         logger.error("报表驱动超时 %ds，已杀掉", timeout_s)
-    stderr = (proc.stderr.read() if proc.stderr else "") or ""
+    stderr = _decode_pipe(proc.stderr.read()) if proc.stderr is not None else ""
     if stderr.strip():
         logger.warning("报表 stderr：%s", stderr.strip()[:300])
     if cancelled:
