@@ -798,6 +798,43 @@ function Select-UiaItem([IntPtr]$h, [int]$i) {
         return 'uia-select'
     } catch { return 'uia-select-fail' }
 }
+function Get-MsaaItemName([IntPtr]$h, [int]$i) {
+    # Eighteenth batch: read-back NAME through the SAME accChild space the
+    # select uses (names[i] and accChild(i) are one loop, 17th shot proved it).
+    # The caller converts the LVM-space read-back index (+offset) before
+    # calling. Empty on any COM failure -- the gate then simply stays closed.
+    $hr = 0
+    $o = $null
+    try { $hr = [RP.U]::MsaaAccessibleH($h, [ref]$o) } catch { return '' }
+    if ($hr -ne 0 -or $o -eq $null) { return '' }
+    try {
+        $c = $o.accChild($i)
+        if ($c -ne $null) {
+            $n = Get-AccName $c 0
+            if ($n -ne '') { return $n }
+        }
+        return (Get-AccName $o $i)
+    } catch { return '' }
+}
+function Get-SelectReadBack([IntPtr]$ctrl, [string]$ch, [int]$lvCount, [int]$offset, [string]$msaaBody, [string]$uhex) {
+    # DOUBLE CONFIRM (eighteenth batch): (1) the integer selected index must
+    # sit INSIDE the real lv row range, (2) the selected row's TEXT must read
+    # back as the PDF printer (lv -> acc via the container offset). Both must
+    # hold or the gate stays closed -- 'it moved the highlight' was never ok.
+    $idx = [RP.U]::ListSelIndex($ctrl, $ch)
+    $rb = ('idx={0}' -f $idx)
+    if ($idx -lt 0) { return @{ ok = $false; rb = $rb; idx = $idx } }
+    if ($lvCount -gt 0 -and $idx -ge $lvCount) {
+        return @{ ok = $false; rb = ($rb + ' out-of-range'); idx = $idx }
+    }
+    $name = ''
+    try {
+        $name = Invoke-StageTimeout 'msaa-name' $msaaBody ('Get-MsaaItemName ([IntPtr]{0}) {1}' -f $ctrl.ToInt64(), ($idx + $offset)) 5000 $uhex
+    } catch { $name = '' }
+    $rb = ('idx={0} name=''{1}'' -f $idx, $name)
+    if ($name -notmatch 'Microsoft Print to PDF') { return @{ ok = $false; rb = $rb; idx = $idx } }
+    return @{ ok = $true; rb = $rb; idx = $idx }
+}
 function Read-W32PrinterList([IntPtr]$h, [string[]]$kids, [string]$pinId) {
     # The printer list among the dialog children -> @{names; ctrl; ch; probe; read}.
     # Fifteenth-batch channels (fourteenth shot's verdict: the raw LVM item-
@@ -867,7 +904,7 @@ function Read-W32PrinterList([IntPtr]$h, [string[]]$kids, [string]$pinId) {
     # candidates x items can never reach the shell watchdog -- on breach we
     # fail HERE with the same timeout code face (stage=win32-list) + trace.
     $budget = [Diagnostics.Stopwatch]::StartNew()
-    $names0 = @(); $ctrl0 = [IntPtr]::Zero; $ch0 = ''; $read0 = ''
+    $names0 = @(); $ctrl0 = [IntPtr]::Zero; $ch0 = ''; $read0 = ''; $lvN = 0
     foreach ($cd in ($cands | Sort-Object -Property pri)) {
         if ($budget.ElapsedMilliseconds -gt 15000) {
             Fail 'report-printer' ("printer-step-hang-timeout stage=win32-list elapsed={0} fg='{1}' target=0x{2} probe='{3}'" -f $budget.ElapsedMilliseconds, (Get-FgLabel), $h.ToInt64().ToString('x'), (($traces -join ' ; ').Substring(0, [Math]::Min(600, ($traces -join ' ; ').Length))))
@@ -891,7 +928,8 @@ function Read-W32PrinterList([IntPtr]$h, [string[]]$kids, [string]$pinId) {
         # and selected index are pure integer answers (cross-process safe).
         $lvInt = ''
         if ($ch -eq 'lv') {
-            $lvInt = ('lvint=count:{0} cur:{1}' -f [RP.U]::ListCount($cd.hw, 'lv'), [RP.U]::ListSelIndex($cd.hw, 'lv'))
+            $lvN = [RP.U]::ListCount($cd.hw, 'lv')   # integer face, ALSO returned as lvcount (18th batch: row-space proof)
+            $lvInt = ('lvint=count:{0} cur:{1}' -f $lvN, [RP.U]::ListSelIndex($cd.hw, 'lv'))
             # trace IMMEDIATELY (fix-3): before the err-heavy msaa/uia line, so
             # truncation can never drop the SysListView32 integer face again.
             $traces += ("{0}@{1} {2}" -f $cd.cls, ($cd.hw.ToInt64().ToString('x')), $lvInt)
@@ -921,7 +959,7 @@ function Read-W32PrinterList([IntPtr]$h, [string[]]$kids, [string]$pinId) {
         if (($names -join ' ') -match 'Microsoft Print to PDF') {
             $pb = ($traces -join ' ; ')
             if ($pb.Length -gt 1000) { $pb = $pb.Substring(0, 1000) }
-            return @{ names = $names; ctrl = $cd.hw; ch = $ch; probe = $pb; read = $read }
+            return @{ names = $names; ctrl = $cd.hw; ch = $ch; probe = $pb; read = $read; lvcount = $lvN }
         }
         if ($names0.Count -eq 0) { $names0 = $names; $ctrl0 = $cd.hw; $ch0 = $ch; $read0 = $read }
     }
@@ -934,7 +972,7 @@ function Read-W32PrinterList([IntPtr]$h, [string[]]$kids, [string]$pinId) {
     $pb = ($traces -join ' ; ')
     if ($traces.Count -eq 0) { $pb = 'na' }
     if ($pb.Length -gt 1000) { $pb = $pb.Substring(0, 1000) }
-    return @{ names = $names0; ctrl = $ctrl0; ch = $ch0; probe = $pb; read = $read0 }
+    return @{ names = $names0; ctrl = $ctrl0; ch = $ch0; probe = $pb; read = $read0; lvcount = $lvN }
 }
 
 # ------------------------------------------------------------------ context
@@ -1477,43 +1515,63 @@ if ($btn1t -match '&P' -or ($btn1t -eq '' -and $txt1 -match 'FolderView|Print to
         }
         [RP.U]::WMark('printer-select-main')
         $selVia = ''
-        $selIdx = -1
-        $msaaSelBody = ((Get-FnDef Get-AccName) + "`n" + (Get-FnDef Select-MsaaItem) + "`n" + (Get-FnDef Get-MsaaItemRect))
+        $msaaSelBody = ((Get-FnDef Get-AccName) + "`n" + (Get-FnDef Select-MsaaItem) + "`n" + (Get-FnDef Get-MsaaItemRect) + "`n" + (Get-FnDef Get-MsaaItemName))
         $uiaSelBody = (Get-FnDef Select-UiaItem)
+        # Eighteenth batch -- TWO INDEX SPACES (the trap the 17th shot exposed):
+        # names[i] and accChild(i) come from ONE loop, so the PDF row's names
+        # index IS what Select/Rect/Name take (acc space) -- the pick loop
+        # above is already correct for them. LVM answers (ListSelIndex,
+        # ListEnsureVisible, lvint.count) live in LV space; the DefView
+        # container node sits between (msaa cnt=4 vs lv count=3): offset =
+        # names.Count - lvCount, acc = lv + offset, lv = acc - offset. Row-view
+        # cross-proof before anything moves: the TAIL lvCount names must hold
+        # the PDF row, else the mapping assumption is wrong and we fail with
+        # the mismatch on the face instead of clicking a stranger's row.
+        $lvCount = 0
+        [void][int]::TryParse([string]$listInfo.lvcount, [ref]$lvCount)
+        $offset = @($listInfo.names).Count - $lvCount
+        $rowOk = $true
+        if ($lvCount -gt 0) {
+            if ($offset -ge 0) {
+                $rowNames = @($listInfo.names | Select-Object -Last $lvCount)
+                if ((($rowNames -join ' ')) -notmatch 'Microsoft Print to PDF') { $rowOk = $false }
+            } else { $rowOk = $false }
+        }
+        if (-not $rowOk) {
+            Fail 'report-printer' ("printer-not-selectable-use-PrinterComboId via=win32-list rowmismatch=names{0}-lv{1} pickacc={2} list='{3}' probe='{4}' ui='{5}'" -f @($listInfo.names).Count, $lvCount, $pickIdx, $listNames, $probe, $snip)
+        }
         if ($listInfo.ch -eq 'cb' -or $listInfo.ch -eq 'lb') {
             # integer-only message select (SETCURSEL + parent WM_COMMAND with
             # the hwnd as a VALUE) -- the printed dialog has never shown cb/lb,
             # but the route stays for them; lv NEVER goes through messages now.
             $selVia = [RP.U]::ListSelect($listInfo.ctrl, $listInfo.ch, $pickIdx)
-            $selIdx = [RP.U]::ListSelIndex($listInfo.ctrl, $listInfo.ch)
         } elseif ($listInfo.read -eq 'msaa') {
-            $selVia = Invoke-StageTimeout 'msaa-select' $msaaSelBody ('Select-MsaaItem ([IntPtr]{0}, {1})' -f $listInfo.ctrl.ToInt64(), $pickIdx) 5000 $uiaHex
-            $selIdx = [RP.U]::ListSelIndex($listInfo.ctrl, $listInfo.ch)
+            # fix-A: args SPACE-separated, never a paren-comma (that built a
+            # single Object[] and died converting to IntPtr param $h).
+            $selVia = Invoke-StageTimeout 'msaa-select' $msaaSelBody ('Select-MsaaItem ([IntPtr]{0}) {1}' -f $listInfo.ctrl.ToInt64(), $pickIdx) 5000 $uiaHex
         } elseif ($listInfo.read -eq 'uia') {
-            $selVia = Invoke-StageTimeout 'uia-select' $uiaSelBody ('Select-UiaItem ([IntPtr]{0}, {1})' -f $listInfo.ctrl.ToInt64(), $pickIdx) 5000 $uiaHex
-            $selIdx = [RP.U]::ListSelIndex($listInfo.ctrl, $listInfo.ch)
+            $selVia = Invoke-StageTimeout 'uia-select' $uiaSelBody ('Select-UiaItem ([IntPtr]{0}) {1}' -f $listInfo.ctrl.ToInt64(), $pickIdx) 5000 $uiaHex
         } else {
             $selVia = 'no-item-structure'
         }
-        # Read-back gate: INTEGER index comparison (LVM_GETNEXTITEM is a pure
-        # integer message -- safe across processes). Semantics unchanged from
-        # the old text-match gate: pickIdx was chosen BY matching the PDF name,
-        # so 'selected index == pickIdx' is exactly 'the PDF row is selected'.
-        $readBack = ('idx={0}' -f $selIdx)
-        if ($selIdx -ne $pickIdx -and $listInfo.ch -eq 'lv') {
+        # DOUBLE CONFIRM read-back: integer idx in lv range + the selected
+        # row's text == the PDF printer (lv -> acc conversion inside).
+        $rbObj = Get-SelectReadBack $listInfo.ctrl $listInfo.ch $lvCount $offset $msaaSelBody $uiaHex
+        $readBack = [string]$rbObj.rb
+        if (-not $rbObj.ok -and $listInfo.ch -eq 'lv') {
             # alternate COM route: whichever of MSAA/UIA did not go first.
             if ($listInfo.read -eq 'msaa') {
                 [RP.U]::WMark('printer-select-uia-alt')
-                $alt = Invoke-StageTimeout 'uia-select' $uiaSelBody ('Select-UiaItem ([IntPtr]{0}, {1})' -f $listInfo.ctrl.ToInt64(), $pickIdx) 5000 $uiaHex
+                $alt = Invoke-StageTimeout 'uia-select' $uiaSelBody ('Select-UiaItem ([IntPtr]{0}) {1}' -f $listInfo.ctrl.ToInt64(), $pickIdx) 5000 $uiaHex
             } else {
                 [RP.U]::WMark('printer-select-msaa-alt')
-                $alt = Invoke-StageTimeout 'msaa-select' $msaaSelBody ('Select-MsaaItem ([IntPtr]{0}, {1})' -f $listInfo.ctrl.ToInt64(), $pickIdx) 5000 $uiaHex
+                $alt = Invoke-StageTimeout 'msaa-select' $msaaSelBody ('Select-MsaaItem ([IntPtr]{0}) {1}' -f $listInfo.ctrl.ToInt64(), $pickIdx) 5000 $uiaHex
             }
             $selVia = ('{0}+{1}' -f $selVia, $alt)
-            $selIdx = [RP.U]::ListSelIndex($listInfo.ctrl, $listInfo.ch)
-            $readBack = ('idx={0}' -f $selIdx)
+            $rbObj = Get-SelectReadBack $listInfo.ctrl $listInfo.ch $lvCount $offset $msaaSelBody $uiaHex
+            $readBack = [string]$rbObj.rb
         }
-        if ($selIdx -ne $pickIdx -and $listInfo.ch -eq 'lv') {
+        if (-not $rbObj.ok -and $listInfo.ch -eq 'lv') {
             # backup path: MSAA screen rect + physical click (accLocation is
             # COM-marshalled; NO LVM_GETITEMRECT). Foreground is arranged ONLY
             # here -- never a precondition of the COM routes -- and the
@@ -1522,8 +1580,13 @@ if ($btn1t -match '&P' -or ($btn1t -eq '' -and $txt1 -match 'FolderView|Print to
             $fg = [RP.U]::GetForegroundWindow()
             if ($fg -ne $hDlg1) { [void][RP.U]::SetForegroundWindow($hDlg1); Start-Sleep -Milliseconds 300 }
             [RP.U]::WMark('rect-backup-click')
-            [void][RP.U]::ListEnsureVisible($listInfo.ctrl, $pickIdx)
-            $rectLine = Invoke-StageTimeout 'msaa-rect' $msaaSelBody ('Get-MsaaItemRect ([IntPtr]{0}, {1})' -f $listInfo.ctrl.ToInt64(), $pickIdx) 5000 $uiaHex
+            # ensure-visible speaks LVM (lv space): convert acc pick to lv and
+            # send ONLY when inside range -- a wrong-space scroll is noise.
+            $pickLv = $pickIdx - $offset
+            if ($pickLv -ge 0 -and $pickLv -lt $lvCount) {
+                [void][RP.U]::ListEnsureVisible($listInfo.ctrl, $pickLv)
+            }
+            $rectLine = Invoke-StageTimeout 'msaa-rect' $msaaSelBody ('Get-MsaaItemRect ([IntPtr]{0}) {1}' -f $listInfo.ctrl.ToInt64(), $pickIdx) 5000 $uiaHex
             $rc = ConvertFrom-RectLine $rectLine
             if ($rc -ne $null -and $rc.w -gt 4 -and $rc.h -gt 4) {
                 [void][RP.U]::SetCursorPos([int]($rc.x + ($rc.w / 2)), [int]($rc.y + ($rc.h / 2)))
@@ -1531,14 +1594,14 @@ if ($btn1t -match '&P' -or ($btn1t -eq '' -and $txt1 -match 'FolderView|Print to
                 [RP.U]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
                 [RP.U]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
                 $selVia = ('{0}+rect-click' -f $selVia)
-                $selIdx = [RP.U]::ListSelIndex($listInfo.ctrl, $listInfo.ch)
             } else {
                 $selVia = ('{0}+rect-no' -f $selVia)
             }
-            $readBack = ('idx={0}' -f $selIdx)
+            $rbObj = Get-SelectReadBack $listInfo.ctrl $listInfo.ch $lvCount $offset $msaaSelBody $uiaHex
+            $readBack = [string]$rbObj.rb
         }
-        if ($selIdx -ne $pickIdx) {
-            Fail 'report-printer' ("printer-not-selectable-use-PrinterComboId via=win32-list ch={0} selvia={1} idx={2} readback='{3}' list='{4}' default='{5}' btn1='{6}' win32='{7}' probe='{8}' ui='{9}'" -f $listInfo.ch, $selVia, $pickIdx, $readBack, $listNames, $defName, $btn1t, $classSummary, $probe, $snip)
+        if (-not $rbObj.ok) {
+            Fail 'report-printer' ("printer-not-selectable-use-PrinterComboId via=win32-list ch={0} selvia={1} idx={2} readback='{3}' list='{4}' default='{5}' btn1='{6}' win32='{7}' probe='{8}' ui='{9}' lvcount={10} offset={11}" -f $listInfo.ch, $selVia, $pickIdx, $readBack, $listNames, $defName, $btn1t, $classSummary, $probe, $snip, $lvCount, $offset)
         }
         $printerVia = 'win32-list'
         $printerOk = $true
