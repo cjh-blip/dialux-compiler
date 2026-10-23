@@ -230,7 +230,7 @@ namespace RP {
       }, IntPtr.Zero);
       return rows.ToArray();
     }
-    private static string RectStr(IntPtr h) {
+    public static string RectStr(IntPtr h) {
       RECT r;
       if (!GetWindowRect(h, out r)) return "-1,-1,-1,-1";
       return r.L + "," + r.T + "," + r.R + "," + r.B;
@@ -738,39 +738,68 @@ function Read-EditTexts([IntPtr]$hDlg, [string[]]$kids) {
 function Select-MsaaItem([IntPtr]$h, [int]$i) {
     # Selection route A (COM, safe): the item's MSAA default action IS select
     # in the accessibility contract. Returns a via-tag string (no object
-    # crosses the runspace wall).
+    # crosses the runspace wall). Twentieth batch: $o MUST be initialised --
+    # [ref]$o throws in the runspace when the variable is undefined, which was
+    # the nineteenth shot's aofw-throw root cause; catches now carry the real
+    # exception text (first 80 chars) instead of a bare marker.
     $hr = 0
-    try { $hr = [RP.U]::MsaaAccessibleH($h, [ref]$o) } catch { return 'aofw-throw' }
+    $o = $null
+    try { $hr = [RP.U]::MsaaAccessibleH($h, [ref]$o) } catch { $m = [string]$_.Exception.Message; return ('aofw-throw:' + $m.Substring(0, [Math]::Min(80, $m.Length))) }
     if ($hr -ne 0) { return ('msaa-null hr=0x{0:x}' -f $hr) }
     if ($o -eq $null) { return 'msaa-null' }
     $n = -1
-    try { $n = [int]$o.accChildCount } catch { return 'childcount-fail' }
+    try { $n = [int]$o.accChildCount } catch { $m = [string]$_.Exception.Message; return ('childcount-fail:' + $m.Substring(0, [Math]::Min(80, $m.Length))) }
     if ($i -ge $n) { return ('idx-out-of-range n=' + $n) }
     try {
         $c = $o.accChild($i)
         if ($c -eq $null) { return 'child-null-no-object' }
         try { $c.accDoDefaultAction(0) } catch {
-            try { $c.accDoDefaultAction() } catch { return 'accdo-fail' }
+            try { $c.accDoDefaultAction() } catch { $m = [string]$_.Exception.Message; return ('accdo-fail:' + $m.Substring(0, [Math]::Min(80, $m.Length))) }
         }
         return 'msaa-accdo'
-    } catch { return 'accdo-throw' }
+    } catch { $m = [string]$_.Exception.Message; return ('accdo-throw:' + $m.Substring(0, [Math]::Min(80, $m.Length))) }
 }
 function Get-MsaaItemRect([IntPtr]$h, [int]$i) {
     # Rect for the physical-click backup: accLocation returns SCREEN
     # coordinates (COM-marshalled) -- no LVM_GETITEMRECT, no raw RECT pointer.
     # Returns "x~y~w~h" or a failure tag (ConvertFrom-RectLine parses).
+    # Twentieth batch: when the COM leg fails, fall back to a GEOMETRIC
+    # content rect (FindWindowEx on SysHeader32 + GetWindowRect -- integer
+    # value parameters, cross-process safe); the caller step-scans the rect
+    # and the read-back gate judges every hop. Fifth segment carries the
+    # COM-side error for diagnosis; ConvertFrom-RectLine reads only four.
     $o = $null
     $hr = 0
-    try { $hr = [RP.U]::MsaaAccessibleH($h, [ref]$o) } catch { return 'aofw-throw' }
-    if ($hr -ne 0) { return ('msaa-null hr=0x{0:x}' -f $hr) }
-    if ($o -eq $null) { return 'msaa-null' }
+    $accErr = ''
+    try { $hr = [RP.U]::MsaaAccessibleH($h, [ref]$o) } catch { $hr = -2; $accErr = 'aofw' }
+    if ($hr -eq 0 -and $o -ne $null) {
+        try {
+            $c = $o.accChild($i)
+            if ($c -ne $null) {
+                $x = 0; $y = 0; $w = 0; $hh = 0
+                $c.accLocation([ref]$x, [ref]$y, [ref]$w, [ref]$hh)
+                if ($w -gt 4 -and $hh -gt 4) { return ('{0}~{1}~{2}~{3}' -f $x, $y, $w, $hh) }
+                $accErr = 'acclocation-zero'
+            } else { $accErr = 'child-null' }
+        } catch { $m = [string]$_.Exception.Message; $accErr = 'accloc:' + $m.Substring(0, [Math]::Min(60, $m.Length)) }
+    } else { if ($accErr -eq '') { $accErr = ('msaa-null hr=0x{0:x}' -f $hr) } }
+    # -- geometric fallback: list content rect on screen (integers only)
     try {
-        $c = $o.accChild($i)
-        if ($c -eq $null) { return 'child-null' }
-        $x = 0; $y = 0; $w = 0; $hh = 0
-        $c.accLocation([ref]$x, [ref]$y, [ref]$w, [ref]$hh)
-        return ('{0}~{1}~{2}~{3}' -f $x, $y, $w, $hh)
-    } catch { return 'acclocation-fail' }
+        $hdr = [RP.U]::FindWindowEx($h, [IntPtr]::Zero, 'SysHeader32', [NullString]::Value)
+        $cr = [RP.U]::RectStr($h)
+        if ($cr -eq '-1,-1,-1,-1') { return ('geom-fail:{0}' -f $accErr) }
+        $p = $cr.Split(',')
+        $cl = ([int]$p[0]) + 1
+        $ct = ([int]$p[1]) + 1
+        $crr = ([int]$p[2]) - 1
+        $cb = ([int]$p[3]) - 1
+        if ($hdr -ne [IntPtr]::Zero) {
+            $hs = [RP.U]::RectStr($hdr)
+            if ($hs -ne '-1,-1,-1,-1') { $hp = $hs.Split(','); $ct = ([int]$hp[3]) + 1 }
+        }
+        if ((($cb - $ct) -lt 12) -or (($crr - $cl) -lt 12)) { return ('geom-tiny:{0}' -f $accErr) }
+        return ('{0}~{1}~{2}~{3}~geom:{4}' -f $cl, $ct, ($crr - $cl), ($cb - $ct), $accErr)
+    } catch { $m = [string]$_.Exception.Message; return ('geom-throw:' + $m.Substring(0, [Math]::Min(60, $m.Length))) }
 }
 function ConvertFrom-RectLine([string]$line) {
     if ($line -eq $null -or $line -eq '') { return $null }
@@ -1589,16 +1618,38 @@ if ($btn1t -match '&P' -or ($btn1t -eq '' -and $txt1 -match 'FolderView|Print to
             $rectLine = Invoke-StageTimeout 'msaa-rect' $msaaSelBody ('Get-MsaaItemRect ([IntPtr]{0}) {1}' -f $listInfo.ctrl.ToInt64(), $pickIdx) 5000 $uiaHex
             $rc = ConvertFrom-RectLine $rectLine
             if ($rc -ne $null -and $rc.w -gt 4 -and $rc.h -gt 4) {
-                [void][RP.U]::SetCursorPos([int]($rc.x + ($rc.w / 2)), [int]($rc.y + ($rc.h / 2)))
-                Start-Sleep -Milliseconds 150
-                [RP.U]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
-                [RP.U]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
-                $selVia = ('{0}+rect-click' -f $selVia)
+                # Twentieth batch: STEP-SCAN the returned rect (item rect =
+                # first hop lands inside it; geometric content rect = 14px
+                # hops). Read-back is the only judge each hop -- a wrong row
+                # never reaches Print. WMark each hop keeps the stage alive.
+                [RP.U]::WMark('rect-scan')
+                $rbT = $null
+                $hit = $false
+                $tries = 0
+                $yStart = $rc.y + 6
+                $yEnd = ($rc.y + $rc.h) - 6
+                for ($y = $yStart; ($y -le $yEnd) -and ($tries -lt 12); $y = $y + 14) {
+                    $tries = $tries + 1
+                    [void][RP.U]::SetCursorPos([int]($rc.x + ($rc.w / 2)), [int]$y)
+                    Start-Sleep -Milliseconds 70
+                    [RP.U]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+                    [RP.U]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+                    Start-Sleep -Milliseconds 70
+                    $rbT = Get-SelectReadBack $listInfo.ctrl $listInfo.ch $lvCount $offset $msaaSelBody $uiaHex
+                    $readBack = [string]$rbT.rb
+                    if ($rbT.ok) { $hit = $true; break }
+                    [RP.U]::WMark('rect-scan')
+                }
+                if ($hit) { $selVia = ('{0}+rect-scan-hit n={1}' -f $selVia, $tries) }
+                else { $selVia = ('{0}+rect-scan-miss n={1} {2}' -f $selVia, $tries, $rectLine) }
+                if ($rbT -eq $null) { $rbT = Get-SelectReadBack $listInfo.ctrl $listInfo.ch $lvCount $offset $msaaSelBody $uiaHex }
+                $rbObj = $rbT
+                $readBack = [string]$rbObj.rb
             } else {
-                $selVia = ('{0}+rect-no' -f $selVia)
+                $selVia = ('{0}+rect-no:{1}' -f $selVia, $rectLine)
+                $rbObj = Get-SelectReadBack $listInfo.ctrl $listInfo.ch $lvCount $offset $msaaSelBody $uiaHex
+                $readBack = [string]$rbObj.rb
             }
-            $rbObj = Get-SelectReadBack $listInfo.ctrl $listInfo.ch $lvCount $offset $msaaSelBody $uiaHex
-            $readBack = [string]$rbObj.rb
         }
         if (-not $rbObj.ok) {
             Fail 'report-printer' ("printer-not-selectable-use-PrinterComboId via=win32-list ch={0} selvia={1} idx={2} readback='{3}' list='{4}' default='{5}' btn1='{6}' win32='{7}' probe='{8}' ui='{9}' lvcount={10} offset={11}" -f $listInfo.ch, $selVia, $pickIdx, $readBack, $listNames, $defName, $btn1t, $classSummary, $probe, $snip, $lvCount, $offset)
