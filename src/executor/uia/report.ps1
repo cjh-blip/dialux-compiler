@@ -1716,6 +1716,7 @@ if ($printerOk) {
 # lands in about a second.
 $combo = $null
 $hEditS = [IntPtr]::Zero
+$saveHop = 'init'
 if ($FileNameId -ne '') {
     $combo = [RP.U]::GetDlgItem($hSave, [int]$FileNameId)
 }
@@ -1749,18 +1750,63 @@ if ($combo -eq [IntPtr]::Zero -or $combo -eq $null) {
     } catch { }
 }
 if (($combo -eq [IntPtr]::Zero -or $combo -eq $null) -and $hEditS -eq [IntPtr]::Zero) {
-    # Twenty-first batch -- Win11 saveas shape (twentieth shot's material):
-    # NO ComboBox exists in the tree; the filename is FileNameControlHost
-    # (a Pane) wrapping an inner Edit with aid=1001. Take it directly with
-    # GetDlgItem BEFORE failing -- value-parameter handle plumbing only.
-    $edDirect = [RP.U]::GetDlgItem($hSave, 1001)
-    if ($edDirect -ne [IntPtr]::Zero) {
-        $combo = $edDirect
-        $fillVia = 'edit-1001'
+    # Twenty-second batch -- twenty-first shot proved BOTH legacy legs dead
+    # on Win11: GetDlgItem(hSave,1001)=NULL (the Edit is four levels deep:
+    # DUIViewWndClassName -> DirectUIHWND -> FloatNotifySink -> ComboBox ->
+    # Edit) and the ComboBox UIA search sees nothing (DirectUI hides it).
+    # Leg A: UIA down FileNameControlHost to its Edit -- the PARENT chain
+    # disambiguates aid=1001 (it also lives in the address bar), a
+    # structural rule rather than a screen coordinate.
+    try {
+        $dw2 = [System.Windows.Automation.AutomationElement]::FromHandle($hSave)
+        $ac = New-Object System.Windows.Automation.PropertyCondition(
+            [System.Windows.Automation.AutomationElement]::AutomationIdProperty,
+            'FileNameControlHost')
+        $hostEl = $dw2.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $ac)
+        if ($hostEl -ne $null) {
+            $ec2 = New-Object System.Windows.Automation.PropertyCondition(
+                [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                [System.Windows.Automation.ControlType]::Edit)
+            $edEl = $hostEl.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $ec2)
+            if ($edEl -ne $null -and $edEl.Current.NativeWindowHandle -ne 0) {
+                $hEditS = [IntPtr]$edEl.Current.NativeWindowHandle
+                $saveHop = 'uia-host'
+            } else { $saveHop = 'uia-host-noedit' }
+        } else { $saveHop = 'uia-host-miss' }
+    } catch { $saveHop = 'uia-host-throw' }
+    if ($hEditS -eq [IntPtr]::Zero) {
+        # Leg B: Win32 five-hop dive along the measured skeleton, each hop a
+        # value-parameter FindWindowEx handle (C# face already present).
+        $d1 = [RP.U]::FindWindowEx($hSave, [IntPtr]::Zero, 'DUIViewWndClassName', [NullString]::Value)
+        if ($d1 -eq [IntPtr]::Zero) { $saveHop = 'dive-duiwnd-miss' }
+        else {
+            $d2 = [RP.U]::FindWindowEx($d1, [IntPtr]::Zero, 'DirectUIHWND', [NullString]::Value)
+            if ($d2 -eq [IntPtr]::Zero) { $saveHop = 'dive-dui-miss' }
+            else {
+                $d3 = [RP.U]::FindWindowEx($d2, [IntPtr]::Zero, 'FloatNotifySink', [NullString]::Value)
+                if ($d3 -eq [IntPtr]::Zero) { $saveHop = 'dive-sink-miss' }
+                else {
+                    $d4 = [RP.U]::FindWindowEx($d3, [IntPtr]::Zero, 'ComboBox', [NullString]::Value)
+                    if ($d4 -eq [IntPtr]::Zero) { $saveHop = 'dive-combo-miss' }
+                    else {
+                        $ed4 = [RP.U]::FindWindowEx($d4, [IntPtr]::Zero, 'Edit', [NullString]::Value)
+                        if ($ed4 -eq [IntPtr]::Zero) { $saveHop = 'dive-edit-miss' }
+                        else { $hEditS = $ed4; $saveHop = 'dive' }
+                    }
+                }
+            }
+        }
+    }
+    if ($hEditS -eq [IntPtr]::Zero) {
+        # Last cheap attempt: direct child lookup (proved NULL on this Win11
+        # window, kept as a third leg for legacy dialog builds).
+        $edDirect = [RP.U]::GetDlgItem($hSave, 1001)
+        if ($edDirect -ne [IntPtr]::Zero) { $combo = $edDirect; $saveHop = 'direct' }
+        elseif ($saveHop -eq 'init') { $saveHop = 'direct-miss' }
     }
 }
 if (($combo -eq [IntPtr]::Zero -or $combo -eq $null) -and $hEditS -eq [IntPtr]::Zero) {
-    Fail 'report-save' 'file-name-combo-not-found'
+    Fail 'report-save' ("file-name-combo-not-found hop={0}" -f $saveHop)
 }
 if ($hEditS -eq [IntPtr]::Zero -and $combo -ne [IntPtr]::Zero) {
     $hEditS = [RP.U]::FindWindowEx($combo, [IntPtr]::Zero, 'Edit', [NullString]::Value)
@@ -1801,7 +1847,7 @@ if ($SaveButtonId -ne '') { $saveBtn = [RP.U]::GetDlgItem($hSave, [int]$SaveButt
 else { $saveBtn = [RP.U]::GetDlgItem($hSave, 1) }    # measured: save = GetDlgItem(1)
 if ($saveBtn -eq [IntPtr]::Zero) { Fail 'report-save' 'save-button-not-found' }
 [void][RP.U]::SendMessage($saveBtn, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)  # BM_CLICK
-Emit 'report-save' 'ok' ("via={0} path={1}" -f $fillVia, $PdfPath)
+Emit 'report-save' 'ok' ("via={0} hop={1} path={2}" -f $fillVia, $saveHop, $PdfPath)
 
 # ------------------------------------------------------- 4) wait for the file
 $sw = [Diagnostics.Stopwatch]::StartNew()

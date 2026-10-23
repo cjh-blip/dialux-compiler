@@ -1,14 +1,17 @@
-"""Twenty-first batch -- save-step Win11 bypass + success-branch record.
+"""Twenty-second batch -- save-step dual legs + success-branch record.
 
-Twentieth shot proved two facts that drive these contracts:
+Twenty-first shot proved both legacy legs dead on Win11:
 
-1. The Win11 save-as tree has NO ComboBox (0 hits; FileNameControlHost is a
-   Pane wrapping Edit aid=1001), so the legacy ComboBox search always landed
-   on ``file-name-combo-not-found``. GetDlgItem(hSave, 1001) must be tried
-   BEFORE the Fail -- value-parameter handle plumbing, cross-process safe.
-2. The success line of report-printer carried no read-back record (Fail-only
-   fields), forcing inference (lv=1/acc=2) instead of an actual sample. The
-   ok detail now carries rb text, resolved index and the rect line.
+1. ``GetDlgItem(hSave, 1001)`` returns NULL -- the filename Edit sits four
+   levels deep (DUIViewWndClassName -> DirectUIHWND -> FloatNotifySink ->
+   ComboBox -> Edit) and GetDlgItem only walks DIRECT children.
+2. The ComboBox UIA search sees nothing -- Win11 hides it inside DirectUI;
+   the tree only exposes FileNameControlHost (a Pane) wrapping Edit aid=1001,
+   and aid=1001 also appears in the address bar (parent-chain disambiguation).
+
+The save step now tries: UIA parent-chain leg -> Win32 five-hop dive leg ->
+legacy direct lookup, each hop tagged in ``$saveHop`` and carried on both
+the Fail line and the save ok line -- the record says WHICH leg filled it.
 """
 
 from __future__ import annotations
@@ -20,15 +23,35 @@ TEXT = (Path(__file__).resolve().parents[1] / "src" / "executor" / "uia" / "repo
 )
 
 
-def test_1001_bypass_precedes_the_fail() -> None:
-    """GetDlgItem(1001) attempt must come before the combo-not-found Fail."""
-    bypass = TEXT.index("edit-1001")
-    fail = TEXT.index("Fail 'report-save' 'file-name-combo-not-found'")
-    assert bypass < fail, "1001 bypass placed after the Fail -- dead code"
-    assert "GetDlgItem($hSave, 1001)" in TEXT, "direct aid=1001 lookup missing"
-    # the original Fail line itself must survive (bypass is a fallback, not a
-    # replacement -- a save window without 1001 must still fail loudly)
-    assert TEXT.count("Fail 'report-save' 'file-name-combo-not-found'") == 1
+def test_dual_legs_precede_the_fail() -> None:
+    """Twenty-second shape: UIA host-chain leg, Win32 five-hop dive leg, then
+    the direct lookup -- all BEFORE the Fail, each tagged in $saveHop.
+    """
+    host_leg = TEXT.index("FileNameControlHost')")  # UIA parent-chain leg
+    dive_leg = TEXT.index("'DUIViewWndClassName'")  # Win32 dive leg
+    direct_leg = TEXT.index("GetDlgItem($hSave, 1001)")  # legacy third leg
+    fail = TEXT.index("file-name-combo-not-found hop={0}")
+    assert host_leg < dive_leg < direct_leg < fail, "leg order broken"
+    # the five-hop skeleton must appear in measured order (searched WITHIN
+    # the dive block -- 'ComboBox'/'Edit' appear earlier in the file too)
+    hops = [
+        "'DUIViewWndClassName'",
+        "'DirectUIHWND'",
+        "'FloatNotifySink'",
+        "'ComboBox'",
+        "'Edit'",
+    ]
+    dive_region = TEXT[dive_leg:]
+    positions = [dive_region.index(h) for h in hops]
+    assert positions == sorted(positions), "dive skeleton order broken"
+    # the original Fail line itself must survive (both legs empty = loud fail)
+    assert TEXT.count("file-name-combo-not-found") == 1, "Fail line duplicated"
+    # hop carrier initialized before the legs
+    assert "$saveHop = 'init'" in TEXT
+    # the save ok line carries the hop too -- record of which leg filled it
+    ok_line = [ln for ln in TEXT.splitlines() if "Emit 'report-save' 'ok'" in ln]
+    assert len(ok_line) == 1 and "hop={1}" in ok_line[0], "save ok missing hop"
+    assert "file-name-combo-not-found hop={0}" in TEXT, "fail missing hop tag"
 
 
 def test_success_detail_carries_record_fields() -> None:
