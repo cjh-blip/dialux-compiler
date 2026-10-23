@@ -1695,7 +1695,16 @@ if ($printerOk) {
     $hSave = Wait-Dialog $DialogTimeoutMs $hDlg1 'report-save'     # the save window is the NEXT dialog
     if ($hSave -eq [IntPtr]::Zero) { Fail 'report-save' 'save-dialog-not-found' }
     [RP.U]::WDisarm()
-    Emit 'report-printer' 'ok' ("via={0} printer='Microsoft Print to PDF' selvia={1} ch={2} list='{3}' default='{4}' read={5}" -f $printerVia, $selVia, $listInfo.ch, $listNames, $defName, $listInfo.read)
+    # Twenty-first batch: success detail must carry the RECORD, not an
+    # inference -- read-back text, resolved index and the rect line (geom
+    # segment when the fallback produced it) ride along on the ok line.
+    $rbIdx = -1
+    try { $rbIdx = [int]$rbObj.idx } catch { $rbIdx = -1 }
+    $rbTxt = ''
+    try { $rbTxt = [string]$readBack } catch { $rbTxt = '' }
+    $geomTxt = ''
+    try { if ($rectLine -ne $null) { $geomTxt = [string]$rectLine } } catch { $geomTxt = '' }
+    Emit 'report-printer' 'ok' ("via={0} printer='Microsoft Print to PDF' selvia={1} ch={2} list='{3}' default='{4}' read={5} rb='{6}' idx={7} geom='{8}'" -f $printerVia, $selVia, $listInfo.ch, $listNames, $defName, $listInfo.read, $rbTxt, $rbIdx, $geomTxt)
 }
 
 # ------------------------------------------------------- 4) save dialog
@@ -1738,6 +1747,17 @@ if ($combo -eq [IntPtr]::Zero -or $combo -eq $null) {
             }
         }
     } catch { }
+}
+if (($combo -eq [IntPtr]::Zero -or $combo -eq $null) -and $hEditS -eq [IntPtr]::Zero) {
+    # Twenty-first batch -- Win11 saveas shape (twentieth shot's material):
+    # NO ComboBox exists in the tree; the filename is FileNameControlHost
+    # (a Pane) wrapping an inner Edit with aid=1001. Take it directly with
+    # GetDlgItem BEFORE failing -- value-parameter handle plumbing only.
+    $edDirect = [RP.U]::GetDlgItem($hSave, 1001)
+    if ($edDirect -ne [IntPtr]::Zero) {
+        $combo = $edDirect
+        $fillVia = 'edit-1001'
+    }
 }
 if (($combo -eq [IntPtr]::Zero -or $combo -eq $null) -and $hEditS -eq [IntPtr]::Zero) {
     Fail 'report-save' 'file-name-combo-not-found'
