@@ -71,19 +71,19 @@ namespace RP {
     // ---- tenth batch (9th shot 2026-10-22): Win32 printer-list channel. The
     // ---- print dialog's UIA FolderView pane reports ZERO named children (two
     // ---- samples 6s apart), so classification and selection move to window
-    // ---- messages; E2 (2026-10-19) read this dialog's list via Win32.
+    // ---- messages. E2 ARCHAEOLOGY (fifteenth batch, `git show 309fbb4`): the
+    // ---- E2 build had NO printer-list reading at all -- its id sheet
+    // ---- ("Brother / Microsoft Print to PDF / OneNote") was measured by the
+    // ---- Windows-side operator's own probe, and its ps1 lacked the whole
+    // ---- print-dialog step. Raw LVM item-text reads entered only at the
+    // ---- tenth batch and crashed DIALux 3/3 (fourteenth shot) -- never a
+    // ---- same-channel success to contradict.
     public delegate bool EnumProc(IntPtr h, IntPtr l);
     [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr p, EnumProc cb, IntPtr l);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassNameW(IntPtr h, StringBuilder s, int max);
     [DllImport("user32.dll")] public static extern int GetDlgCtrlID(IntPtr h);
     [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr h);
     [StructLayout(LayoutKind.Sequential)] public struct PT { public int X; public int Y; }
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    public struct LVITEMW {
-      public int mask; public int iItem; public int iSubItem;
-      public uint state; public uint stateMask;
-      public IntPtr pszText; public int cchTextMax; public int iImage; public IntPtr lParam;
-    }
     [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref PT p);
     [DllImport("winspool.drv", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern bool GetDefaultPrinterW(StringBuilder s, ref int n);
@@ -91,6 +91,20 @@ namespace RP {
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
     [DllImport("user32.dll", CharSet = CharSet.Auto)]
     public static extern IntPtr SendMessageTimeout(IntPtr h, int m, UIntPtr w, IntPtr l, uint flags, uint timeout, out UIntPtr result);
+    // Fifteenth batch: MSAA entry (oleacc) -- the SAFE cross-process read for
+    // SysListView32 items. COM marshals the pointer; no raw lParam structs.
+    [DllImport("oleacc.dll")]
+    private static extern int AccessibleObjectFromWindow(IntPtr hwnd, uint id, ref Guid iid, [MarshalAs(UnmanagedType.IUnknown)] out object pUnk);
+    // OBJID_CLIENT = -4; IID_IDispatch so PowerShell can late-bind the
+    // returned object (accChildCount / accChild / accName / accDoDefaultAction
+    // resolve through IDispatch -- no hand-written vtable, no dispId risk).
+    public static object MsaaAccessible(IntPtr h) {
+      object o = null;
+      Guid iid = new Guid("00020400-0000-0000-C000-000000000046");
+      int hr = AccessibleObjectFromWindow(h, 0xFFFFFFFC, ref iid, out o);
+      if (hr != 0 || o == null) return null;
+      return o;
+    }
 
     // Read-side messages must not hang on a dying or hung dialog (tenth shot:
     // PrintDlgEx self-crashed mid-read, 49s tail never located). 3s,
@@ -238,57 +252,20 @@ namespace RP {
       if ((long)SafeSend(h, 0x1004, IntPtr.Zero, IntPtr.Zero) > 0) return "lv";   // LVM_GETITEMCOUNT
       return "";
     }
-    // Item text WITH the per-item reply count (eleventh-batch fix: the count
-    // said 3 while every text came back empty, so the reply count travels in
-    // the probe and 'wrong message' vs 'virtual list answers nothing' is
-    // readable from the failure itself). lv: LVM_GETITEMTEXTW with the index
-    // in wParam AND in the struct (tenth batch had wParam=0 -- air), then the
-    // A variant decoded as cp936; cb/lb: CB_GETLBTEXT/LB_GETTEXT with the
-    // same empty-read A fallback.
-    private static string ListItemByChannel(IntPtr h, string ch, int i) {
-      int rc;
-      return ListItemByChannelEx(h, ch, i, out rc);
-    }
-    private static string ListItemByChannelEx(IntPtr h, string ch, int i, out int rc) {
-      rc = 0;
-      if (ch == "lv") {
-        IntPtr buf = Marshal.AllocHGlobal(1024);
-        IntPtr p = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(LVITEMW)));
-        try {
-          LVITEMW it = new LVITEMW();
-          it.mask = 1; it.iItem = i; it.iSubItem = 0;
-          it.pszText = buf; it.cchTextMax = 511;
-          Marshal.Copy(new byte[1024], 0, buf, 1024);
-          Marshal.StructureToPtr(it, p, false);
-          rc = (int)(long)SafeSend(h, 0x1073, (IntPtr)i, p);   // LVM_GETITEMTEXTW, wParam = index
-          string txtW = Marshal.PtrToStringUni(buf) ?? "";
-          if (txtW.Length > 0) return txtW;
-          Marshal.Copy(new byte[1024], 0, buf, 1024);
-          Marshal.StructureToPtr(it, p, false);
-          int rcA = (int)(long)SafeSend(h, 0x102D, (IntPtr)i, p);   // LVM_GETITEMTEXTA
-          if (rcA > rc) rc = rcA;
-          return AnsiFrom(buf);
-        } finally { Marshal.FreeHGlobal(p); Marshal.FreeHGlobal(buf); }
-      }
-      IntPtr b = Marshal.AllocHGlobal(1024);
-      try {
-        Marshal.Copy(new byte[1024], 0, b, 1024);
-        if (ch == "cb") rc = (int)(long)SafeSend(h, 0x0148, (IntPtr)i, b);  // CB_GETLBTEXT
-        else rc = (int)(long)SafeSend(h, 0x0189, (IntPtr)i, b);             // LB_GETTEXT
-        string txt = Marshal.PtrToStringUni(b) ?? "";
-        if (txt.Length > 0) return txt;
-        return AnsiFrom(b);
-      } finally { Marshal.FreeHGlobal(b); }
-    }
-    private static string AnsiFrom(IntPtr buf) {
-      byte[] raw = new byte[1024];
-      Marshal.Copy(buf, raw, 0, 1024);
-      int z = 0;
-      while (z < 1024 && raw[z] != 0) z++;
-      if (z == 0) return "";
-      try { return Encoding.GetEncoding(936).GetString(raw, 0, z); }
-      catch { return System.Text.Encoding.ASCII.GetString(raw, 0, z); }
-    }
+    // ---- Fifteenth batch: ALL raw pointer-carrying list messages are gone
+    // ---- from this file. Mechanism (fourteenth shot, Comctl32.dll AV 3/3):
+    // ---- a cross-process SendMessage does NOT marshal lParam -- the receiver
+    // ---- dereferences an address inside ITS OWN address space: it either
+    // ---- AVs (c0000005, module offset 0x70cc6) or reads garbage while our
+    // ---- SafeSend times out on the dying thread (e10's three empty strings
+    // ---- with n=3: the count answer raced the crash). Retired: item-text
+    // ---- (W and A), item-state, item-rect, CB_GETLBTEXT/LB_GETTEXT -- every
+    // ---- one of those lParam values is a pointer. What stays is INTEGER-ONLY
+    // ---- traffic (counts, cur-sel, next-item, ensure-visible BOOL lParam)
+    // ---- plus WM_GETTEXT, which user32 marshals across processes by design.
+    // ---- Text reading moves to MSAA (COM-marshalled), UIA (same) and
+    // ---- WM_GETTEXT in the .ps1; selection of lv items moves to MSAA
+    // ---- accDoDefaultAction / UIA SelectionItem.
     private static int ListCount(IntPtr h, string ch) {
       int n = 0;
       if (ch == "cb") n = (int)(long)SafeSend(h, 0x0146, IntPtr.Zero, IntPtr.Zero);
@@ -297,51 +274,17 @@ namespace RP {
       if (n < 0) n = 0;
       return n;
     }
-    public static string[] ListRead(IntPtr h, string ch) {
-      int n = ListCount(h, ch);
-      if (n > 64) n = 64;
-      string[] items = new string[n];
-      for (int i = 0; i < n; i++) items[i] = ListItemByChannel(h, ch, i);
-      return items;
-    }
-    // One-line forensic for the probe field: channel, count, every item's
-    // reply count, first item text -- travels in every printer-list failure.
-    public static string ListReadInfo(IntPtr h, string ch) {
-      if (ch == null || ch.Length == 0) return "ch=none";
-      int n = ListCount(h, ch);
-      if (n > 64) n = 64;
-      int[] rcs = new int[n];
-      string first = "";
-      for (int i = 0; i < n; i++) {
-        int rc;
-        string txt = ListItemByChannelEx(h, ch, i, out rc);
-        rcs[i] = rc;
-        if (i == 0) first = txt;
-      }
-      StringBuilder sb = new StringBuilder();
-      sb.Append(ch).Append('=').Append(n).Append(" rc=");
-      for (int i = 0; i < n; i++) { if (i > 0) sb.Append(','); sb.Append(rcs[i]); }
-      if (n == 0) { sb.Append(" first=none"); return sb.ToString(); }
-      sb.Append(" first='").Append(first.Length > 30 ? first.Substring(0, 30) : first).Append("'");
-      return sb.ToString();
-    }
     public static int ListSelIndex(IntPtr h, string ch) {
       if (ch == "cb") return (int)(long)SafeSend(h, 0x0147, IntPtr.Zero, IntPtr.Zero);   // CB_GETCURSEL
       if (ch == "lb") return (int)(long)SafeSend(h, 0x0188, IntPtr.Zero, IntPtr.Zero);   // LB_GETCURSEL
       return (int)(long)SafeSend(h, 0x100C, (IntPtr)(-1), (IntPtr)2);                    // LVM_GETNEXTITEM from -1, LVNI_SELECTED
     }
-    public static string ListSelText(IntPtr h, string ch) {
-      int i = ListSelIndex(h, ch);
-      if (i < 0) return "";
-      return ListItemByChannel(h, ch, i);
-    }
-    // Select by control type -- MESSAGE ONLY (twelfth batch): no foreground,
-    // no mouse, no rect. cb/lb: SETCURSEL + the parent's WM_COMMAND
-    // notification (dialogs read selection lazily; CBN/LBN_SELCHANGE = 1).
-    // lv: LVIS selection-state message; returns 'msg-not-stuck' when the
-    // message did not take, which is the .ps1's cue to run the rect-click
-    // backup (foreground arranged THERE, never on this path). The read-back
-    // gate in the .ps1 is unchanged and still gates the Print click.
+    // Select by control type -- cb/lb ONLY (integer-only message routes:
+    // SETCURSEL + the parent's WM_COMMAND with the control hwnd as a VALUE).
+    // The lv branch is retired: LVIS-state carries an LVITEM pointer (the
+    // fourteenth shot's crash twin waiting on the next step) -- SysListView32
+    // selection now runs through MSAA accDoDefaultAction / UIA SelectionItem
+    // in the .ps1 (fifteenth batch).
     public static string ListSelect(IntPtr h, string ch, int i) {
       if (ch == "cb") {
         SafeSend(h, 0x014E, (IntPtr)i, IntPtr.Zero);            // CB_SETCURSEL
@@ -357,58 +300,34 @@ namespace RP {
         if (pl != IntPtr.Zero && idl != 0) SafeSend(pl, 0x0111, (IntPtr)((1 << 16) | idl), h);  // LBN_SELCHANGE
         return "set-cur";
       }
-      int cap = Marshal.SizeOf(typeof(LVITEMW));
-      IntPtr ps = Marshal.AllocHGlobal(cap);
-      try {
-        LVITEMW st = new LVITEMW();
-        st.mask = 0x0008;   // LVIF_STATE
-        st.iItem = i; st.iSubItem = 0;
-        st.state = 0x0003; st.stateMask = 0x0003;                  // SELECTED | FOCUSED
-        Marshal.StructureToPtr(st, ps, false);
-        SafeSend(h, 0x102A, IntPtr.Zero, ps);                      // LVM_SETITEMSTATE
-        if (ListSelIndex(h, "lv") == i) return "set-itemstate";
-        return "msg-not-stuck";
-      } finally { Marshal.FreeHGlobal(ps); }
+      return "lv-via-com";   // caller routes lv to MSAA/UIA (fifteenth batch)
     }
-    // Backup path ONLY (twelfth batch): ensure-visible + item-rect real click,
-    // invoked by the .ps1 after the message path did not stick. The .ps1
-    // arranges the foreground immediately before calling this -- that is the
-    // ONLY place in the printer step where foreground state is touched. Dual
-    // rect-layout attempts kept from the previous batch; the read-back gate
-    // after the click is what keeps a mis-click from reaching Print.
-    public static string ListRectClick(IntPtr h, string ch, int i) {
-      if (ch != "lv") return "no-backup";   // cb/lb are message-only by design
-      int cap = Marshal.SizeOf(typeof(LVITEMW));
-      IntPtr pr = Marshal.AllocHGlobal(cap);
-      try {
-        SafeSend(h, 0x100F, (IntPtr)i, IntPtr.Zero);               // LVM_ENSUREVISIBLE
-        // attempt A: wParam = item index, RECT written at lParam
-        Marshal.Copy(new byte[cap], 0, pr, cap);
-        SafeSend(h, 0x100E, (IntPtr)i, pr);                        // LVM_GETITEMRECT
-        if (ClickItemRect(h, pr)) return "rect-click";
-        // attempt B: wParam = LVIR_BOUNDS(0), item seeded in LVITEM layout
-        byte[] seed = new byte[cap];
-        BitConverter.GetBytes(i).CopyTo(seed, 4);                  // iItem at offset 4
-        Marshal.Copy(seed, 0, pr, cap);
-        SafeSend(h, 0x100E, IntPtr.Zero, pr);
-        if (ClickItemRect(h, pr)) return "rect-click";
-        return "no-rect";
-      } finally { Marshal.FreeHGlobal(pr); }
+    // Integer-only helper for the rect-click backup: make item i visible
+    // (LVM_ENSUREVISIBLE, lParam is a BOOL -- no pointer, cross-process safe).
+    public static string ListEnsureVisible(IntPtr h, int i) {
+      if ((long)SafeSend(h, 0x100F, (IntPtr)i, IntPtr.Zero) != 0) return "ok";
+      return "no";
     }
-    private static bool ClickItemRect(IntPtr h, IntPtr buf) {
-      int l = Marshal.ReadInt32(buf, 0);
-      int t = Marshal.ReadInt32(buf, 4);
-      int r = Marshal.ReadInt32(buf, 8);
-      int b = Marshal.ReadInt32(buf, 12);
-      if (r - l <= 4 || b - t <= 4) return false;
-      PT pt = new PT();
-      pt.X = l + (r - l) / 2;
-      pt.Y = t + (b - t) / 2;
-      if (!ClientToScreen(h, ref pt)) return false;
-      SetCursorPos(pt.X, pt.Y);
-      mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero);
-      mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero);
-      return true;
+    // WM_GETTEXT through SafeSend: user32 marshals this message across
+    // processes by design (GetWindowText itself is built on it), so the
+    // buffer pointer never reaches the foreign address space raw; 3s ceiling
+    // keeps a wedged target reading as an honest empty string.
+    public static string WndText(IntPtr h) {
+      IntPtr buf = Marshal.AllocHGlobal(1024);
+      try {
+        Marshal.Copy(new byte[1024], 0, buf, 1024);
+        long rc = (long)SafeSend(h, 0x000D, (IntPtr)511, buf);   // WM_GETTEXT, cchMax
+        if (rc == 0) return "";
+        string txt = Marshal.PtrToStringUni(buf) ?? "";
+        if (txt.Length > 0) return txt;
+        byte[] raw = new byte[1024];
+        Marshal.Copy(buf, raw, 0, 1024);
+        int z = 0;
+        while (z < 1024 && raw[z] != 0) z++;
+        if (z == 0) return "";
+        try { return Encoding.GetEncoding(936).GetString(raw, 0, z); }
+        catch { return System.Text.Encoding.ASCII.GetString(raw, 0, z); }
+      } finally { Marshal.FreeHGlobal(buf); }
     }
   }
 }
@@ -609,21 +528,198 @@ function Test-ListAdjToCaption([string]$rect, [string]$anchor) {
     if ($ct -le $at -and $cb -ge $ab) { return $true }                  # caption inside
     return $false
 }
+function Get-FnDef([string]$n) {
+    # Serialize a defined function's text for an Invoke-StageTimeout runspace
+    # (same shape as the L1 Get-DlgUiText call site: named wrapper + body).
+    $c = Get-Command $n -ErrorAction SilentlyContinue
+    if ($c -eq $null) { return '' }
+    return ('function {0} ' -f $n) + [string]$c.ScriptBlock
+}
+function Get-AccName($acc, $child) {
+    # PS late-binds IDispatch: three shapes across oleacc implementations --
+    # get_accName(varChild), accName(varChild), bare accName on a child
+    # object. All tried, empty on total failure; a COM error must never
+    # throw past the runner (all three throws are swallowed inside).
+    $r = ''
+    try { $r = [string]$acc.get_accName($child) } catch { }
+    if ($r -eq '') { try { $r = [string]$acc.accName($child) } catch { } }
+    if ($r -eq '') { try { $r = [string]$acc.accName() } catch { } }
+    return $r
+}
+function ConvertFrom-ChanLine([string]$line) {
+    # Wire shape returned through Invoke-StageTimeout (string-only channel):
+    # "ok~cnt~err~name1|name2|..." -- '~' never appears in err (callers
+    # replace it), '|' never appears in printer names.
+    $r = @{ ok = $false; cnt = -1; err = ''; names = @() }
+    if ($line -eq $null -or $line -eq '') { $r.err = 'empty'; return $r }
+    $p = $line.Split([char]'~', 4)
+    if ($p.Length -lt 4) { $r.err = 'bad-shape'; return $r }
+    $r.ok = ($p[0] -eq '1')
+    $n = -1; [void][int]::TryParse($p[1], [ref]$n); $r.cnt = $n
+    $r.err = $p[2]
+    if ($p[3] -ne '') { $r.names = $p[3].Split([char]'|') }
+    return $r
+}
+function Read-MsaaList([IntPtr]$h) {
+    # Fifteenth-batch channel A (PRIMARY read): MSAA through oleacc. COM
+    # marshals everything -- the fourteenth shot's raw-pointer AV cannot
+    # happen here by construction. Dual varChild shapes per index (child
+    # object first, then indexed name on the root), all errors contained.
+    # Returns ONE string for the runspace channel: ok~cnt~err~names.
+    $o = $null
+    $errS = ''
+    try { $o = [RP.U]::MsaaAccessible($h) } catch { $errS = 'aofw-throw' }
+    if ($o -eq $null) { return ('0~-1~{0}~' -f $errS) }
+    $n = -1
+    try { $n = [int]$o.accChildCount } catch { $errS = 'childcount-fail' }
+    if ($n -lt 0) { return ('0~-1~{0}~' -f $errS) }
+    $names = @()
+    $accErr = 0
+    for ($i = 0; $i -lt $n -and $i -lt 64; $i++) {
+        $txt = ''
+        try {
+            $c = $null
+            try { $c = $o.accChild($i) } catch { $c = $null }
+            if ($c -ne $null) { $txt = Get-AccName $c 0 }
+            if ($txt -eq '') { $txt = Get-AccName $o $i }
+        } catch { $accErr++ }
+        $names += $txt
+    }
+    $errOut = ''
+    if ($accErr -gt 0) { $errOut = ('accerr=' + $accErr) }
+    $errOut = $errOut.Replace('~', ' ').Replace('|', ' ')
+    return ('1~{0}~{1}~{2}' -f $n, $errOut, ($names -join '|'))
+}
+function Read-UiaList([IntPtr]$h) {
+    # Channel B: UIA anchored on the LIST HANDLE ITSELF -- not the dialog tree
+    # the ninth shot walked (that stopped at the FolderView pane and reported
+    # zero children). Children first; an empty child set falls back to one
+    # deep scan whose count rides in err as dump material. Returns ok~cnt~err~names.
+    $errS = ''
+    $n = -1
+    $names = @()
+    try {
+        $e = [System.Windows.Automation.AutomationElement]::FromHandle($h)
+        if ($e -eq $null) { return '0~-1~fromhandle-null~' }
+        $ch = $e.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)
+        $n = $ch.Count
+        for ($i = 0; $i -lt $ch.Count -and $i -lt 64; $i++) {
+            $t = ''
+            try { $t = [string]$ch.Item($i).Current.Name } catch { }
+            $names += $t
+        }
+        if ($ch.Count -eq 0) {
+            $all = $e.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+            $errS = ('deep=' + $all.Count)
+            for ($i = 0; $i -lt $all.Count -and $i -lt 64; $i++) {
+                $t = ''
+                try { $t = [string]$all.Item($i).Current.Name } catch { }
+                if ($t -ne '') { $names += $t }
+            }
+        }
+    } catch {
+        $errS = ("$($_.Exception.Message)").Replace('~', ' ').Replace('|', ' ')
+        if ($errS.Length -gt 60) { $errS = $errS.Substring(0, 60) }
+    }
+    return ('1~{0}~{1}~{2}' -f $n, $errS, ($names -join '|'))
+}
+function Read-EditTexts([IntPtr]$hDlg, [string[]]$kids) {
+    # Channel C: WM_GETTEXT on the dialog's Edit children and ComboBox edit
+    # boxes (the current selection often shows there). user32 marshals
+    # WM_GETTEXT across processes by design and WndText carries the 3s
+    # SafeSend ceiling -- no runspace wrapper needed; runs in the main runspace.
+    $names = @()
+    $cnt = 0
+    $err = ''
+    foreach ($k in $kids) {
+        $p = $k.Split([char]'|', 4)
+        if ($p.Length -lt 4) { continue }
+        if ($p[1] -ne 'Edit' -and $p[1] -ne 'ComboBox' -and $p[1] -ne 'ComboBoxEx32') { continue }
+        $hw = [IntPtr]([long]$p[0])
+        $t = ''
+        try { $t = [RP.U]::WndText($hw) } catch { $err = 'wndtext-throw' }
+        if ($t -ne '') { $names += $t }
+        $cnt++
+    }
+    return @{ names = $names; cnt = $cnt; err = $err }
+}
+function Select-MsaaItem([IntPtr]$h, [int]$i) {
+    # Selection route A (COM, safe): the item's MSAA default action IS select
+    # in the accessibility contract. Returns a via-tag string (no object
+    # crosses the runspace wall).
+    $o = [RP.U]::MsaaAccessible($h)
+    if ($o -eq $null) { return 'msaa-null' }
+    $n = -1
+    try { $n = [int]$o.accChildCount } catch { return 'childcount-fail' }
+    if ($i -ge $n) { return ('idx-out-of-range n=' + $n) }
+    try {
+        $c = $o.accChild($i)
+        if ($c -eq $null) { return 'child-null-no-object' }
+        try { $c.accDoDefaultAction(0) } catch {
+            try { $c.accDoDefaultAction() } catch { return 'accdo-fail' }
+        }
+        return 'msaa-accdo'
+    } catch { return 'accdo-throw' }
+}
+function Get-MsaaItemRect([IntPtr]$h, [int]$i) {
+    # Rect for the physical-click backup: accLocation returns SCREEN
+    # coordinates (COM-marshalled) -- no LVM_GETITEMRECT, no raw RECT pointer.
+    # Returns "x~y~w~h" or a failure tag (ConvertFrom-RectLine parses).
+    $o = [RP.U]::MsaaAccessible($h)
+    if ($o -eq $null) { return 'msaa-null' }
+    try {
+        $c = $o.accChild($i)
+        if ($c -eq $null) { return 'child-null' }
+        $x = 0; $y = 0; $w = 0; $hh = 0
+        $c.accLocation([ref]$x, [ref]$y, [ref]$w, [ref]$hh)
+        return ('{0}~{1}~{2}~{3}' -f $x, $y, $w, $hh)
+    } catch { return 'acclocation-fail' }
+}
+function ConvertFrom-RectLine([string]$line) {
+    if ($line -eq $null -or $line -eq '') { return $null }
+    $p = $line.Split([char]'~')
+    if ($p.Length -lt 4) { return $null }
+    $v = @{}
+    foreach ($pair in @(@('x', 0), @('y', 1), @('w', 2), @('h', 3))) {
+        $num = 0
+        if (-not [int]::TryParse($p[$pair[1]], [ref]$num)) { return $null }
+        $v[$pair[0]] = $num
+    }
+    return $v
+}
+function Select-UiaItem([IntPtr]$h, [int]$i) {
+    # Selection route B (COM, safe): SelectionItem.Select() on the child at
+    # the same index the names array came from (children order == names order).
+    try {
+        $e = [System.Windows.Automation.AutomationElement]::FromHandle($h)
+        if ($e -eq $null) { return 'uia-fromhandle-null' }
+        $ch = $e.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)
+        if ($i -ge $ch.Count) { return ('uia-idx-out n=' + $ch.Count) }
+        $it = $ch.Item($i)
+        $p = $it.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)
+        $p.Select()
+        return 'uia-select'
+    } catch { return 'uia-select-fail' }
+}
 function Read-W32PrinterList([IntPtr]$h, [string[]]$kids, [string]$pinId) {
-    # The printer list among the dialog children -> @{names; ctrl; ch; probe}.
-    # Window-message channels per candidate: ComboBox / ListBox / SysListView32
-    # -- E2 measured this same dialog's list (Brother / Microsoft Print to PDF /
-    # OneNote) through Win32; the ninth shot's UIA FolderView path reports zero
-    # named children, so the marker match never fired.
-    # Eleventh-batch fixes on top (tenth shot: n=3 but list=';;'):
-    #   - ORDER is caption-anchored, not class-guessed: the Static caption
-    #     marks the real container; adjacency ranks, presence never excludes
-    #     (pin still outranks geometry -- caller pinned it deliberately);
-    #   - EVERY readable candidate is read AND traced (ch, per-item reply
-    #     counts, first text) so the probe tells 'right control, wrong
-    #     message' apart from 'virtual list answers nothing' by itself.
-    # -PrinterComboId stays the pinned escape hatch: given but absent = the
-    # old printer-combo-id-not-found hard stop (meaning unchanged).
+    # The printer list among the dialog children -> @{names; ctrl; ch; probe; read}.
+    # Fifteenth-batch channels (fourteenth shot's verdict: the raw LVM item-
+    # text reads crashed DIALux 3/3 -- cross-process lParam is NOT marshalled):
+    #   A  MSAA  -- oleacc, COM-marshalled, PRIMARY (also feeds selection);
+    #   B  UIA   -- FromHandle on the list handle itself (ninth shot's dialog-
+    #               tree walk stopped at the FolderView pane; anchored deep
+    #               read is the untested shape, dump material rides in probe);
+    #   C  WM_GETTEXT on Edit/ComboBox children (user32-marshalled), dialog-
+    #               wide once after A/B, runs in the main runspace (3s-bounded).
+    # COUNTS still come from ListChannel (integer messages, cross-process safe)
+    # -- n=3 was never in doubt; only the TEXT path was the killer.
+    # E2 archaeology (git show 309fbb4): the E2 build had NO list reading at
+    # all; its 'Brother / Microsoft Print to PDF / OneNote' row was the
+    # Windows-side operator's own probe. There is no same-channel E2 success
+    # to reconcile -- the contradiction dissolves.
+    # Caption-anchored ordering (eleventh batch) kept: the Static caption
+    # ranks candidates, presence never excludes; -PrinterComboId keeps its
+    # hard-stop escape hatch meaning unchanged.
     $selWord = ([char]0x9009).ToString() + ([char]0x62E9).ToString() + ([char]0x6253).ToString() + ([char]0x5370).ToString() + ([char]0x673A).ToString()  # select printers
     $anchorRect = ''
     foreach ($k in $kids) {
@@ -653,33 +749,68 @@ function Read-W32PrinterList([IntPtr]$h, [string[]]$kids, [string]$pinId) {
     }
     if ($cands.Count -eq 0) { $cands = $auto }   # class-blind probe fallback
     $traces = @()
+    # Fifteenth batch: runspace bodies assembled once (L1-shaped ceilings on
+    # both COM channels -- a wedged provider must yield a code face, never a
+    # dead zone). Read-UiaList is self-contained; Read-MsaaList needs Get-AccName.
+    $msaaReadBody = ((Get-FnDef Get-AccName) + "`n" + (Get-FnDef Read-MsaaList))
+    $uiaReadBody = (Get-FnDef Read-UiaList)
+    $uhex = ('0x{0:x}' -f $h.ToInt64())
     # Twelfth batch: total budget for the whole probe loop. Single messages
     # are already bounded by SafeSend (3s); this caps the SUM so a wall of
     # candidates x items can never reach the shell watchdog -- on breach we
     # fail HERE with the same timeout code face (stage=win32-list) + trace.
     $budget = [Diagnostics.Stopwatch]::StartNew()
-    $names0 = @(); $ctrl0 = [IntPtr]::Zero; $ch0 = ''
+    $names0 = @(); $ctrl0 = [IntPtr]::Zero; $ch0 = ''; $read0 = ''
     foreach ($cd in ($cands | Sort-Object -Property pri)) {
         if ($budget.ElapsedMilliseconds -gt 15000) {
             Fail 'report-printer' ("printer-step-hang-timeout stage=win32-list elapsed={0} fg='{1}' target=0x{2} probe='{3}'" -f $budget.ElapsedMilliseconds, (Get-FgLabel), $h.ToInt64().ToString('x'), (($traces -join ' ; ').Substring(0, [Math]::Min(200, ($traces -join ' ; ').Length))))
         }
         $ch = [RP.U]::ListChannel($cd.hw)
         if ($ch -eq '') { $traces += ("{0}:no-channel" -f $cd.cls); continue }
-        $names = @([RP.U]::ListRead($cd.hw, $ch))
-        $info = [RP.U]::ListReadInfo($cd.hw, $ch)
-        $traces += ("{0}@{1}:{2}" -f $cd.cls, ($cd.hw.ToInt64().ToString('x')), $info)
+        # Channel A (MSAA, primary): COM ceiling 10s via L1 twin.
+        [RP.U]::WMark('msaa-list-read')
+        $msLine = Invoke-StageTimeout 'msaa-list-read' $msaaReadBody ('Read-MsaaList ([IntPtr]{0})' -f $cd.hw.ToInt64()) 10000 $uhex
+        $ms = ConvertFrom-ChanLine $msLine
+        # Channel B (UIA on the handle): same ceiling, own stage.
+        [RP.U]::WMark('uia-list-read')
+        $uiLine = Invoke-StageTimeout 'uia-list-read' $uiaReadBody ('Read-UiaList ([IntPtr]{0})' -f $cd.hw.ToInt64()) 10000 $uhex
+        $ui = ConvertFrom-ChanLine $uiLine
+        $msFirst = ''
+        if ($ms.names.Count -gt 0) { $msFirst = $ms.names[0] }
+        $uiFirst = ''
+        if ($ui.names.Count -gt 0) { $uiFirst = $ui.names[0] }
+        $traces += ("{0}@{1}:msaa={2} cnt={3} err='{4}' first='{5}' uia={6} cnt={7} err='{8}' first='{9}'" -f $cd.cls, ($cd.hw.ToInt64().ToString('x')), $(if ($ms.ok) {'ok'} else {'no'}), $ms.cnt, $ms.err, $msFirst, $(if ($ui.ok) {'ok'} else {'no'}), $ui.cnt, $ui.err, $uiFirst)
+        # Primary picks MSAA names (selection indexes into accChild order);
+        # UIA wins only when it is the channel that actually holds the PDF row.
+        $names = $ms.names
+        $read = 'msaa'
+        if (($names -join ' ') -notmatch 'Microsoft Print to PDF') {
+            if (($ui.names -join ' ') -match 'Microsoft Print to PDF') { $names = $ui.names; $read = 'uia' }
+            elseif ($names.Count -eq 0) { $names = $ui.names; $read = 'uia' }
+        }
         if ($names.Count -eq 0) { continue }
         if (($names -join ' ') -match 'Microsoft Print to PDF') {
             $pb = ($traces -join ' ; ')
             if ($pb.Length -gt 400) { $pb = $pb.Substring(0, 400) }
-            return @{ names = $names; ctrl = $cd.hw; ch = $ch; probe = $pb }
+            return @{ names = $names; ctrl = $cd.hw; ch = $ch; probe = $pb; read = $read }
         }
-        if ($names0.Count -eq 0) { $names0 = $names; $ctrl0 = $cd.hw; $ch0 = $ch }
+        if ($names0.Count -eq 0) { $names0 = $names; $ctrl0 = $cd.hw; $ch0 = $ch; $read0 = $read }
+    }
+    # Channel C after A/B found no PDF: dialog-wide WM_GETTEXT on Edit /
+    # ComboBox children (main runspace, 3s-bounded per box by SafeSend).
+    [RP.U]::WMark('edit-text-read')
+    $ed = Read-EditTexts $h $kids
+    $edFirst = ''
+    if (@($ed.names).Count -gt 0) { $edFirst = @($ed.names)[0] }
+    $traces += ("edit={0} err='{1}' first='{2}'" -f $ed.cnt, $ed.err, $edFirst)
+    if ((@($ed.names) -join ' ') -match 'Microsoft Print to PDF') {
+        $names0 = @($ed.names); $read0 = 'edit'
+        $ctrl0 = $h; $ch0 = 'edit'
     }
     $pb = ($traces -join ' ; ')
     if ($traces.Count -eq 0) { $pb = 'na' }
     if ($pb.Length -gt 400) { $pb = $pb.Substring(0, 400) }
-    return @{ names = $names0; ctrl = $ctrl0; ch = $ch0; probe = $pb }
+    return @{ names = $names0; ctrl = $ctrl0; ch = $ch0; probe = $pb; read = $read0 }
 }
 
 # ------------------------------------------------------------------ context
@@ -1216,21 +1347,69 @@ if ($btn1t -match '&P' -or ($btn1t -eq '' -and $txt1 -match 'FolderView|Print to
         for ($ci = 0; $ci -lt @($listInfo.names).Count; $ci++) {
             if ($listInfo.names[$ci] -match 'Microsoft Print to PDF') { $pickIdx = $ci; break }
         }
-        [RP.U]::WMark('printer-select-msg')
-        $selVia = [RP.U]::ListSelect($listInfo.ctrl, $listInfo.ch, $pickIdx)
-        $readBack = [RP.U]::ListSelText($listInfo.ctrl, $listInfo.ch)
-        if ($readBack -notmatch 'Microsoft Print to PDF') {
-            # backup path: rect real click. Foreground is arranged ONLY here
-            # (foreground is never a precondition of the main route), and the
-            # read-back gate below still decides whether Print is ever clicked.
+        [RP.U]::WMark('printer-select-main')
+        $selVia = ''
+        $selIdx = -1
+        $msaaSelBody = ((Get-FnDef Get-AccName) + "`n" + (Get-FnDef Select-MsaaItem) + "`n" + (Get-FnDef Get-MsaaItemRect))
+        $uiaSelBody = (Get-FnDef Select-UiaItem)
+        if ($listInfo.ch -eq 'cb' -or $listInfo.ch -eq 'lb') {
+            # integer-only message select (SETCURSEL + parent WM_COMMAND with
+            # the hwnd as a VALUE) -- the printed dialog has never shown cb/lb,
+            # but the route stays for them; lv NEVER goes through messages now.
+            $selVia = [RP.U]::ListSelect($listInfo.ctrl, $listInfo.ch, $pickIdx)
+            $selIdx = [RP.U]::ListSelIndex($listInfo.ctrl, $listInfo.ch)
+        } elseif ($listInfo.read -eq 'msaa') {
+            $selVia = Invoke-StageTimeout 'msaa-select' $msaaSelBody ('Select-MsaaItem ([IntPtr]{0}, {1})' -f $listInfo.ctrl.ToInt64(), $pickIdx) 5000 $uiaHex
+            $selIdx = [RP.U]::ListSelIndex($listInfo.ctrl, $listInfo.ch)
+        } elseif ($listInfo.read -eq 'uia') {
+            $selVia = Invoke-StageTimeout 'uia-select' $uiaSelBody ('Select-UiaItem ([IntPtr]{0}, {1})' -f $listInfo.ctrl.ToInt64(), $pickIdx) 5000 $uiaHex
+            $selIdx = [RP.U]::ListSelIndex($listInfo.ctrl, $listInfo.ch)
+        } else {
+            $selVia = 'no-item-structure'
+        }
+        # Read-back gate: INTEGER index comparison (LVM_GETNEXTITEM is a pure
+        # integer message -- safe across processes). Semantics unchanged from
+        # the old text-match gate: pickIdx was chosen BY matching the PDF name,
+        # so 'selected index == pickIdx' is exactly 'the PDF row is selected'.
+        $readBack = ('idx={0}' -f $selIdx)
+        if ($selIdx -ne $pickIdx -and $listInfo.ch -eq 'lv') {
+            # alternate COM route: whichever of MSAA/UIA did not go first.
+            if ($listInfo.read -eq 'msaa') {
+                [RP.U]::WMark('printer-select-uia-alt')
+                $alt = Invoke-StageTimeout 'uia-select' $uiaSelBody ('Select-UiaItem ([IntPtr]{0}, {1})' -f $listInfo.ctrl.ToInt64(), $pickIdx) 5000 $uiaHex
+            } else {
+                [RP.U]::WMark('printer-select-msaa-alt')
+                $alt = Invoke-StageTimeout 'msaa-select' $msaaSelBody ('Select-MsaaItem ([IntPtr]{0}, {1})' -f $listInfo.ctrl.ToInt64(), $pickIdx) 5000 $uiaHex
+            }
+            $selVia = ('{0}+{1}' -f $selVia, $alt)
+            $selIdx = [RP.U]::ListSelIndex($listInfo.ctrl, $listInfo.ch)
+            $readBack = ('idx={0}' -f $selIdx)
+        }
+        if ($selIdx -ne $pickIdx -and $listInfo.ch -eq 'lv') {
+            # backup path: MSAA screen rect + physical click (accLocation is
+            # COM-marshalled; NO LVM_GETITEMRECT). Foreground is arranged ONLY
+            # here -- never a precondition of the COM routes -- and the
+            # read-back gate still decides whether Print is ever clicked.
             [RP.U]::WMark('rect-backup-foreground')
             $fg = [RP.U]::GetForegroundWindow()
             if ($fg -ne $hDlg1) { [void][RP.U]::SetForegroundWindow($hDlg1); Start-Sleep -Milliseconds 300 }
             [RP.U]::WMark('rect-backup-click')
-            $selVia = ('{0}+{1}' -f $selVia, [RP.U]::ListRectClick($listInfo.ctrl, $listInfo.ch, $pickIdx))
-            $readBack = [RP.U]::ListSelText($listInfo.ctrl, $listInfo.ch)
+            [void][RP.U]::ListEnsureVisible($listInfo.ctrl, $pickIdx)
+            $rectLine = Invoke-StageTimeout 'msaa-rect' $msaaSelBody ('Get-MsaaItemRect ([IntPtr]{0}, {1})' -f $listInfo.ctrl.ToInt64(), $pickIdx) 5000 $uiaHex
+            $rc = ConvertFrom-RectLine $rectLine
+            if ($rc -ne $null -and $rc.w -gt 4 -and $rc.h -gt 4) {
+                [void][RP.U]::SetCursorPos([int]($rc.x + ($rc.w / 2)), [int]($rc.y + ($rc.h / 2)))
+                Start-Sleep -Milliseconds 150
+                [RP.U]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+                [RP.U]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+                $selVia = ('{0}+rect-click' -f $selVia)
+                $selIdx = [RP.U]::ListSelIndex($listInfo.ctrl, $listInfo.ch)
+            } else {
+                $selVia = ('{0}+rect-no' -f $selVia)
+            }
+            $readBack = ('idx={0}' -f $selIdx)
         }
-        if ($readBack -notmatch 'Microsoft Print to PDF') {
+        if ($selIdx -ne $pickIdx) {
             Fail 'report-printer' ("printer-not-selectable-use-PrinterComboId via=win32-list ch={0} selvia={1} idx={2} readback='{3}' list='{4}' default='{5}' btn1='{6}' win32='{7}' probe='{8}' ui='{9}'" -f $listInfo.ch, $selVia, $pickIdx, $readBack, $listNames, $defName, $btn1t, $classSummary, $probe, $snip)
         }
         $printerVia = 'win32-list'
@@ -1274,7 +1453,7 @@ if ($printerOk) {
     $hSave = Wait-Dialog $DialogTimeoutMs $hDlg1 'report-save'     # the save window is the NEXT dialog
     if ($hSave -eq [IntPtr]::Zero) { Fail 'report-save' 'save-dialog-not-found' }
     [RP.U]::WDisarm()
-    Emit 'report-printer' 'ok' ("via={0} printer='Microsoft Print to PDF' selvia={1} ch={2} list='{3}' default='{4}'" -f $printerVia, $selVia, $listInfo.ch, $listNames, $defName)
+    Emit 'report-printer' 'ok' ("via={0} printer='Microsoft Print to PDF' selvia={1} ch={2} list='{3}' default='{4}' read={5}" -f $printerVia, $selVia, $listInfo.ch, $listNames, $defName, $listInfo.read)
 }
 
 # ------------------------------------------------------- 4) save dialog

@@ -314,7 +314,10 @@ def test_report_ps1_printer_step_win32_channel():
     - 辅路＝只读默认打印机恰为 PDF 直接点打印（GetDefaultPrinter，永不写系统设置）；
     - 过闸＝打印框消失＋保存窗出现才 Emit ok（点了不算）；
     - 失败码：unclassified-dialog 旧码保留（无信号 else 支），新码带 Win32 现场，
-      不盲点不绕闸。"""
+      不盲点不绕闸。
+    十五批换血（第十四枪崩溃 3/3 后崩因坐实）：读取/选中从裸 LVM 消息换
+    MSAA/UIA/WM_GETTEXT 三通道（COM 与系统封送跨进程安全），回读改整数
+    索引；分类/失败码/双闸/ui 字段与本测试的结构断言全部保留。"""
     t = _src(REPORT_PS1)
     i0 = t.index("# ------------------------------------- 3) print dialog")
     i1 = t.index("# ------------------------------------------------------- 4) save dialog")
@@ -323,17 +326,18 @@ def test_report_ps1_printer_step_win32_channel():
     assert "'&P'" in block, "打印对话框分类＝按钮 1 加速键 &P（实测 打印(&P)）"
     assert "'&S'" in block, "保存窗分类＝&S（实测 保存(&S)）"
     assert r"'\.pdf'" in block, "保存窗 .pdf 信号仍在（按钮文本读不到时的兜底）"
-    # 选择：Win32 列表通道（读/选/回读）＋现场
+    # 选择：读取换三通道（MSAA 主/UIA 深/WM_GETTEXT Edit）＋回读整数索引
     assert "function Read-W32PrinterList" in t, "列表读取函数在场"
-    for fn in ("ChildScene", "Get-KidClassSummary", "ListChannel", "ListRead"):
-        assert fn in t, f"Win32 助手 {fn} 不在"
+    for fn in ("ChildScene", "Get-KidClassSummary", "ListChannel",
+               "Read-MsaaList", "Read-UiaList", "Read-EditTexts"):
+        assert fn in t, f"Win32 助手/通道函数 {fn} 不在"
     assert "Read-W32PrinterList" in block
-    assert "ListSelect" in block and "ListSelText" in block, "选中后必须回读"
+    assert "ListSelIndex" in block and "ListSelect" in block, "选中后必须回读（整数索引，消息安全）"
     assert "GetDefaultPrinterName" in t, "辅路：默认打印机只读查询"
     assert "Set-DefaultPrinter" not in t and "SetDefaultPrinter" not in t, (
         "系统设置不许碰（只读查询有，写入无）")
     # 点打印前必须完成回读确认（回读在 BM_CLICK 之前）
-    assert block.index("ListSelText") < block.index("0x00F5"), "先回读后点打印"
+    assert block.index("ListSelIndex") < block.index("0x00F5"), "先回读后点打印"
     # 过闸：打印框消失 + 保存窗出现，才 Emit ok（点了不算）
     assert "print-dialog-still-open" in block, "打印框消失是闸的一半"
     i_wait = block.index("$hSave = Wait-Dialog $DialogTimeoutMs $hDlg1")
@@ -355,25 +359,33 @@ def test_report_ps1_printer_step_win32_channel():
 
 
 def test_report_ps1_list_text_read_and_probe():
-    r"""第十一批（第十枪 n=3 list=';;'）：计数通、文本空——只修“怎么把字
-    读出来”，判据与过闸一行不动：
-    - LVM_GETITEMTEXTW 的 wParam＝item index（第十批传 0＝读空气），
-      struct.iItem 同时填（双方言都盖）；空读退 A 版（cp936 解码）；
-    - 每候选读且取证：probe='cls@hwnd:ch=n rc=… first='…''（rc＝逐项消息
-      回复数），'对了控件错消息' vs '虚拟列表不答' 一次现场分得开；
-    - 容器定位不按类型猜：Static 标题（char 码拼，文件保 ASCII）＋rect
-      几何相邻只排序不排除，pin 优先级最高；ChildScene 带 rect；
-    - 读类消息全走 SafeSend（SendMessageTimeout 3s ABORTIFHUNG）——
-      崩溃/挂死窗口不再吊死 runner；BM_CLICK 动作消息保持原样；
-    - 失败码现场字段按实际补齐（上封信误称四码全带 btn1：本批 not-in-list
-      与 not-selectable 真带 btn1/probe/ch，unclassified 支保持原字段）。"""
+    r"""第十五批（第十四枪崩溃 3/3 坐实崩因）：裸 LVM 读取＝崩因，文本读取
+    换靶 MSAA/UIA/WM_GETTEXT 三通道；判据与过闸一行不动：
+    - 机制：跨进程 SendMessage 不封送 lParam——LVM_GETITEMTEXT 的 LVITEM*
+      到达目标进程是它自己地址空间的同值地址 → 解引用 AV（Comctl32
+      0x70cc6）或垃圾，我方 3s 超时回空——e10 的 n=3+三空串与 3/3 崩溃
+      在此闭环；裸指针消息零命中（全文件负断言见 test_report_msaa_channels）；
+    - 通道 A MSAA（oleacc，COM 封送）主读、B UIA 单锚深读（第九枪的零
+      子项是主树走法所致，单锚是未验形状）、C WM_GETTEXT（系统封送）Edit
+      扫，三通道现场全进 probe（cnt/err/first）；
+    - E2 考古（git show 309fbb4）：E2 版无列表读取（其 id 表写明 'ps1 缺
+      整步'），三台名字是 Windows 方现场探测——'同法成功 vs 必崩'的矛盾
+      不存在，注释已更正；
+    - 容器定位不按类型猜（Static 标题 char 码＋几何只排序不排除、pin 优先）
+      与读类消息 SafeSend 防挂、BM_CLICK 动作保持原样；
+    - 失败码现场字段按实际（btn1/probe/ch）照旧。"""
     t = _src(REPORT_PS1)
-    # wParam 修正与双方言盖、A 版备路
-    assert "0x1073, (IntPtr)i" in t, "LVM_GETITEMTEXTW 的 wParam 必须是 item index"
-    assert "it.iItem = i" in t, "struct.iItem 同时填（两种方言都盖）"
-    assert "0x102D" in t, "A 版备路（cp936）在场"
+    # 三通道构件在场（读与选）
+    for tok in ("MsaaAccessible", "AccessibleObjectFromWindow", "accChildCount",
+                "accDoDefaultAction", "accLocation", "WndText", "0x000D"):
+        assert tok in t, f"三通道构件 {tok} 不在"
+    for fn in ("Read-MsaaList", "Read-UiaList", "Read-EditTexts",
+               "Select-MsaaItem", "Select-UiaItem", "Get-MsaaItemRect"):
+        assert f"function {fn}" in t, f"通道函数 {fn} 不在"
+    # 旧裸读取载体全删（消息级零命中在 test_report_msaa_channels）
+    for gone in ("ListReadInfo", "ListItemByChannel", "LVITEMW", "ListSelText"):
+        assert gone not in t, f"裸读取载体 {gone} 应已删除"
     # 取证字段
-    assert "ListReadInfo" in t and " rc=" in t, "逐项回复数取证"
     assert "probe='" in t, "probe 字段进现场"
     for ln in ([x for x in t.splitlines() if "printer-not-in-win32-list" in x]
                + [x for x in t.splitlines() if "via=win32-list ch=" in x]):
@@ -441,33 +453,37 @@ def test_report_ps1_step_watchdog_and_stage_timeouts():
     assert "stage=win32-list elapsed=" in t, "列表探测总预算超限先于看门狗出码"
     assert "15000" in t, "单次列表探测预算 15s（settle 重读各自有界）"
     assert "$ps.Stop()" not in t, "超时路径禁 Stop（停一个卡住的调用本身会卡）"
-    # stage 标记：watchdog 的 last= 分诊靠它们
+    # stage 标记：watchdog 的 last= 分诊靠它们（十五批：printer 步新增通道
+    # 细分标记，msaa-list-read 为首代表）
     for mk in ("WMark('wait-dialog')", "WMark('uia-dialog-text')", "WMark('win32-list-read')",
-               "WMark('printer-select-msg')", "WMark('print-click')", "WMark('gate-save-appear')"):
+               "WMark('printer-select-main')", "WMark('msaa-list-read')",
+               "WMark('print-click')", "WMark('gate-save-appear')"):
         assert mk in t, f"stage 标记 {mk} 不在"
 
 
 def test_report_ps1_message_first_foreground_backup_only():
-    r"""第十二批组2（打嫌疑①）：选中与点击改消息驱动优先，前台依赖从主路
-    移除（只存在于 rect 备路）；BM_CLICK 本身是消息投递、gate 块零前台。
-    开头 AttachThreadInput 组合保留不删（时间线已证 mode/print 两步跑过、
-    非本挂点；删共享代码会波及其他步骤——红灯不碰）。"""
+    r"""第十二批组2（打嫌疑①），第十五批换轨：lv 主路从 LVM_SETITEMSTATE
+    消息换成 COM（MSAA accDoDefaultAction / UIA SelectionItem）——因为消息
+    本身就是崩因（LVITEM* lParam 跨进程不封送，与读取同机制）；C# ListSelect
+    只剩 cb/lb 整数分支，矩形备路的 RECT 指针消息（LVM_GETITEMRECT）同灭，
+    换 accLocation 屏幕坐标＋物理点击。前台纪律不变：主路零前台，前台只夹在
+    备路标记与备路点击之间；AttachThreadInput 开头组合保留（时间线已证非本
+    挂点、删共享代码波及 mode/print——红灯不碰）。"""
     t = _src(REPORT_PS1)
-    # C# 分工：ListSelect=纯消息（无矩形/无鼠标），ListRectClick=备路
-    sel_blk = t[t.index("public static string ListSelect"):t.index("public static string ListRectClick")]
-    rect_blk = t[t.index("public static string ListRectClick"):t.index("private static bool ClickItemRect")]
-    assert "ClickItemRect" not in sel_blk, "主路选中不得含矩形点击"
+    # C# 分工：ListSelect=cb/lb 整数消息 + lv 分流声明（lv 走 COM）
+    sel_blk = t[t.index("public static string ListSelect"):t.index("public static string ListEnsureVisible")]
+    assert "0x102A" not in sel_blk, "lv 消息选中已灭（LVITEM*＝崩因同款）"
+    assert 'return "lv-via-com"' in sel_blk, "lv 分流声明（caller 走 MSAA/UIA）"
     assert "SetCursorPos" not in sel_blk, "主路选中不得动鼠标"
-    assert "0x102A" in sel_blk, "lv 主路＝LVM_SETITEMSTATE 消息"
-    assert "msg-not-stuck" in sel_blk, "消息未生效时的备路触发值"
-    assert sel_blk.index("0x102A") < sel_blk.index("msg-not-stuck"), "先消息后判定"
-    assert "ClickItemRect" in rect_blk and "0x100E" in rect_blk, "矩形备路保留在 ListRectClick"
+    assert "ListRectClick" not in t and "ClickItemRect" not in t, "RECT 指针备路已灭"
     # PS 主路：前台零依赖——标记锁死前台只夹在备路标记与备路点击之间
-    assert t.index("[RP.U]::WMark('printer-select-msg')") < t.index("SetForegroundWindow($hDlg1)"), (
+    assert t.index("[RP.U]::WMark('printer-select-main')") < t.index("SetForegroundWindow($hDlg1)"), (
         "主路选中标记必须先于任何前台操作")
-    assert t.index("[RP.U]::WMark('rect-backup-foreground')") < t.index("SetForegroundWindow($hDlg1)") < t.index("[RP.U]::ListRectClick"), (
-        "前台只出现在备路标记与备路点击之间")
-    assert "never a precondition of the main route" in t, "主路无前台的声明在场"
+    i_fg = t.index("[RP.U]::WMark('rect-backup-foreground')")
+    i_set = t.index("SetForegroundWindow($hDlg1)", i_fg)
+    i_click = t.index("SetCursorPos", t.index("[RP.U]::WMark('rect-backup-click')"))
+    assert i_fg < i_set < i_click, "前台只出现在备路标记与备路点击之间"
+    assert "never a precondition of the COM routes" in t, "主路无前台的声明在场"
     # gate 块（BM_CLICK 所在）零前台：打印按钮走消息投递
     g0 = t.index("if ($printerOk) {")
     g1 = t.index("Emit 'report-printer' 'ok'", g0)
@@ -480,23 +496,24 @@ def test_report_ps1_message_first_foreground_backup_only():
 
 
 def test_report_ps1_no_regression_of_batch_10_11_primitives():
-    r"""第十二批组3：第十/十一批原语不回归——SafeSend 计数、双闸时序、
-    800ms settle、pinned 硬停、&P 分类、LVM wParam 双位、probe 取证全部
-    照旧（既有测试同时全绿即为交叉验证）。"""
+    r"""第十二批组3，十五批数字换血：SafeSend 实数随裸读取删除降为 16
+    （22 时代含 6 处裸消息发送——它们正是崩因，删除合法）；wParam/rc 断言
+    换 COM 与整数索引原语；其余（settle/pinned/&P/+320/双闸/回读先于点击）
+    照旧，既有测试同时全绿即为交叉验证。"""
     t = _src(REPORT_PS1)
-    assert t.count("SafeSend(") >= 22, "SafeSend 消息封存不回退（拆分只移宿主不减）"
+    assert t.count("SafeSend(") >= 16, "SafeSend 封存（十五批删 6 裸发送后实数 16）"
     assert "Start-Sleep -Milliseconds 800" in t, "settle 只读重读保留"
     assert "printer-combo-id-not-found" in t, "pinned 有值即硬停保留"
     assert "'&P'" in t and "'&S'" in t, "实测加速键分类保留"
-    assert "0x1073, (IntPtr)i" in t, "LVM_GETITEMTEXTW wParam=索引保留"
-    assert "ListReadInfo" in t and "probe='" in t, "逐项 rc 取证保留"
+    assert "MsaaAccessible" in t and "ListSelIndex" in t, "读取/回读原语换 COM＋整数索引后仍在"
+    assert "probe='" in t and "msaa=" in t, "probe 取证换三通道现场"
     assert "+ 320" in t, "+320 余量未碰（边界）"
     # 双闸时序（第十批断言的同一语义，本批插入 WMark/WDisarm 不得破序）
     i_wait = t.index("$hSave = Wait-Dialog $DialogTimeoutMs $hDlg1")
     i_fail_save = t.index("Fail 'report-save' 'save-dialog-not-found'")
     assert i_wait < i_fail_save < t.rindex("Emit 'report-printer' 'ok'"), "双闸时序不回归"
-    # 回读在 BM_CLICK 之前（第十批原断言语义）
-    assert t.index("ListSelText") < t.index("0x00F5"), "先回读后点打印不回归"
+    # 回读在 BM_CLICK 之前（第十批原断言语义，块级断言在 printer_step 测）
+    assert t.index("ListSelIndex") < t.index("0x00F5"), "先回读后点打印不回归"
 
 
 def test_ugr_ps1_recalc_completion_waits_for_value_emergence():
