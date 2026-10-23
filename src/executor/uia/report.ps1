@@ -49,7 +49,7 @@ Add-Type -AssemblyName WindowsBase    # System.Windows.Point for ElementFromPoin
 try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { }
 
 if (-not ([System.Management.Automation.PSTypeName]'RP.U').Type) {
-Add-Type @"
+$csSource = @"
 using System;
 using System.Text;
 using System.Runtime.InteropServices;
@@ -99,7 +99,14 @@ namespace RP {
     // plain SendMessage so click behavior stays byte-identical.
     public static IntPtr SafeSend(IntPtr h, int m, IntPtr w, IntPtr l) {
       UIntPtr res;
-      IntPtr ok = SendMessageTimeout(h, m, (UIntPtr)w, l, 0x0002 /*SMTO_ABORTIFHUNG*/, 3000, out res);
+      // 14th batch: the old cast of w DIRECTLY to UIntPtr was rejected by the
+      // PS 5.1 CodeDom compiler (0.cs(50): cannot convert System.IntPtr to
+      // System.UIntPtr) -- the thirteenth shot's whole root chain: Add-Type
+      // failed, RP.U never loaded, TypeNotFound storm). Chain through long, the
+      // same two explicit hops the return path below (UIntPtr->long->IntPtr)
+      // has always used and compiled. Semantics unchanged: 3000ms,
+      // SMTO_ABORTIFHUNG, zero reads back as IntPtr.Zero.
+      IntPtr ok = SendMessageTimeout(h, m, (UIntPtr)(long)w, l, 0x0002 /*SMTO_ABORTIFHUNG*/, 3000, out res);
       if (ok == IntPtr.Zero) return IntPtr.Zero;
       return (IntPtr)((long)res);
     }
@@ -406,6 +413,25 @@ namespace RP {
   }
 }
 "@
+# 14th batch -- HARD FAIL GATE (the thirteenth shot's root chain): under
+# ErrorActionPreference=Continue a CodeDom compile error only printed to
+# stderr and the script marched on, [RP.U] stayed unloaded, every call threw
+# TypeNotFound (33,667-line storm), ARMED never landed and Wait-Dialog spun
+# until the 45s external gate. Compile now fails FAST: one code face with the
+# cs line number and the first 300 chars of the compiler message (single-line,
+# detail stays a valid STEP payload), then exit -- never run uncompiled.
+$addErr = $null
+try { Add-Type -TypeDefinition $csSource -ErrorAction Stop } catch { $addErr = $_ }
+if ($addErr -ne $null) {
+    $raw = ("$($addErr.Exception.Message) | " + ($addErr.InvocationInfo.PositionMessage -replace '\s+', ' '))
+    $lnM = [regex]::Match($raw, '\.cs\((\d+)\)')
+    $lnS = 'unknown'
+    if ($lnM.Success) { $lnS = $lnM.Groups[1].Value }
+    $raw = ($raw -replace "'", '')
+    if ($raw.Length -gt 300) { $raw = $raw.Substring(0, 300) }
+    Write-Output ("STEP report-init fail add-type-compile-failed line={0} errors='{1}'" -f $lnS, $raw)
+    exit 1
+}
 }
 
 function Emit([string]$name, [string]$status, [string]$detail = '') {
@@ -462,7 +488,7 @@ function ClickCenter([object]$el) {
     [RP.U]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
     [RP.U]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
 }
-function Wait-Dialog([int]$ms, [IntPtr]$skipHwnd) {
+function Wait-Dialog([int]$ms, [IntPtr]$skipHwnd, [string]$step = 'report-mode') {
     # Wait for a visible #32770 OWNED BY DIALUX, optionally skipping one hwnd.
     # 2026-10-19 fixes (measured on the real machine):
     #   (a) $null marshals to an EMPTY string, so the old call only matched
@@ -472,7 +498,21 @@ function Wait-Dialog([int]$ms, [IntPtr]$skipHwnd) {
     $sw = [Diagnostics.Stopwatch]::StartNew()
     while ($sw.ElapsedMilliseconds -lt $ms) {
         $h = [RP.U]::FindWindowEx([IntPtr]::Zero, [IntPtr]::Zero, '#32770', [NullString]::Value)
+        $spin = 0
         while ($h -ne [IntPtr]::Zero) {
+            $spin++
+            if ($spin -gt 2000) {
+                # 14th batch: when FindWindowEx THROWS (e.g. [RP.U] unloaded),
+                # $h never updates and this inner walk spun forever -- the
+                # thirteenth shot burned 16,829 pairs of errors here. Cap it;
+                # the last error text rides the code face for triage. $step
+                # names the caller so the code stays on the caller's step.
+                $errTxt = 'none'
+                if ($Error.Count -gt 0) { $errTxt = "$($Error[0])" }
+                $errTxt = ($errTxt -replace '\s+', ' ')
+                if ($errTxt.Length -gt 160) { $errTxt = $errTxt.Substring(0, 160) }
+                Fail $step ('wait-dialog-spin-timeout spin=' + $spin + " last='" + $errTxt + "'")
+            }
             if ($h -ne $skipHwnd -and [RP.U]::IsWindowVisible($h)) {
                 $dpid = 0
                 [void][RP.U]::GetWindowThreadProcessId($h, [ref]$dpid)
@@ -1131,7 +1171,7 @@ if ($crumb -eq '') { $crumb = (Join-Path $env:TEMP 'dialux_report_printer_crumb.
 [RP.U]::WArm(120000, 'report-printer')
 [RP.U]::WTarget([IntPtr]::Zero)
 [RP.U]::WMark('wait-dialog')
-$hDlg1 = Wait-Dialog $DialogTimeoutMs ([IntPtr]::Zero)
+$hDlg1 = Wait-Dialog $DialogTimeoutMs ([IntPtr]::Zero) 'report-printer'
 if ($hDlg1 -eq [IntPtr]::Zero) { Fail 'report-printer' 'print-dialog-not-found' }
 [RP.U]::WTarget($hDlg1)
 [RP.U]::WMark('uia-dialog-text')
@@ -1231,7 +1271,7 @@ if ($printerOk) {
         Fail 'report-printer' ("print-dialog-still-open via={0} list='{1}' default='{2}' btn1='{3}' probe='{4}' ui='{5}'" -f $printerVia, $listNames, $defName, $btn1t, $probe, $snip)
     }
     [RP.U]::WMark('gate-save-appear')
-    $hSave = Wait-Dialog $DialogTimeoutMs $hDlg1     # the save window is the NEXT dialog
+    $hSave = Wait-Dialog $DialogTimeoutMs $hDlg1 'report-save'     # the save window is the NEXT dialog
     if ($hSave -eq [IntPtr]::Zero) { Fail 'report-save' 'save-dialog-not-found' }
     [RP.U]::WDisarm()
     Emit 'report-printer' 'ok' ("via={0} printer='Microsoft Print to PDF' selvia={1} ch={2} list='{3}' default='{4}'" -f $printerVia, $selVia, $listInfo.ch, $listNames, $defName)
