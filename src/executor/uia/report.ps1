@@ -604,11 +604,20 @@ function Test-ListAdjToCaption([string]$rect, [string]$anchor) {
     return $false
 }
 function Get-FnDef([string]$n) {
-    # Serialize a defined function's text for an Invoke-StageTimeout runspace
-    # (same shape as the L1 Get-DlgUiText call site: named wrapper + body).
+    # Serialize a defined function's text for an Invoke-StageTimeout runspace.
+    # Seventeenth batch -- THE ROOT CAUSE (sixteenth shot's ParseException
+    # trio): ScriptBlock.ToString() returns the NORMALIZED BODY with the outer
+    # braces ALREADY STRIPPED and the param block INSIDE, so the old naked
+    # concat produced 'function Name param(...)' -- a declaration with no
+    # body, parse error right at the param. Wrap the braces back ({0} = name,
+    # {1} = body; {{ }} are LITERAL braces in the format string): what lands
+    # in the runspace is 'function Name { param(...) ... }' -- the name is
+    # declared WITHOUT argument parens and the parameters live solely in the
+    # inner param, so the duplicate-parens collision (second form, the
+    # hand-concat call site) cannot occur by construction.
     $c = Get-Command $n -ErrorAction SilentlyContinue
     if ($c -eq $null) { return '' }
-    return ('function {0} ' -f $n) + [string]$c.ScriptBlock
+    return ('function {0} {{ {1} }}' -f $n, [string]$c.ScriptBlock)
 }
 function Get-AccName($acc, $child) {
     # PS late-binds IDispatch: three shapes across oleacc implementations --
@@ -843,6 +852,16 @@ function Read-W32PrinterList([IntPtr]$h, [string[]]$kids, [string]$pinId) {
     $msaaReadBody = ((Get-FnDef Get-AccName) + "`n" + (Get-FnDef Read-MsaaList))
     $uiaReadBody = (Get-FnDef Read-UiaList)
     $uhex = ('0x{0:x}' -f $h.ToInt64())
+    # Seventeenth batch (fix-3): the edit channel runs FIRST so its segment is
+    # the trace HEAD -- the sixteenth shot proved err inflation fills the
+    # probe window and squeezes trailing segments out (probe 401/400 dropped
+    # lvint and edit). Head segments survive any truncation. The PDF-match
+    # fallback below is unchanged; only the execution position moved.
+    [RP.U]::WMark('edit-text-read')
+    $ed = Read-EditTexts $h $kids
+    $edFirst = ''
+    if (@($ed.names).Count -gt 0) { $edFirst = @($ed.names)[0] }
+    $traces += ("edit={0} err='{1}' first='{2}'" -f $ed.cnt, $ed.err, $edFirst)
     # Twelfth batch: total budget for the whole probe loop. Single messages
     # are already bounded by SafeSend (3s); this caps the SUM so a wall of
     # candidates x items can never reach the shell watchdog -- on breach we
@@ -851,7 +870,7 @@ function Read-W32PrinterList([IntPtr]$h, [string[]]$kids, [string]$pinId) {
     $names0 = @(); $ctrl0 = [IntPtr]::Zero; $ch0 = ''; $read0 = ''
     foreach ($cd in ($cands | Sort-Object -Property pri)) {
         if ($budget.ElapsedMilliseconds -gt 15000) {
-            Fail 'report-printer' ("printer-step-hang-timeout stage=win32-list elapsed={0} fg='{1}' target=0x{2} probe='{3}'" -f $budget.ElapsedMilliseconds, (Get-FgLabel), $h.ToInt64().ToString('x'), (($traces -join ' ; ').Substring(0, [Math]::Min(200, ($traces -join ' ; ').Length))))
+            Fail 'report-printer' ("printer-step-hang-timeout stage=win32-list elapsed={0} fg='{1}' target=0x{2} probe='{3}'" -f $budget.ElapsedMilliseconds, (Get-FgLabel), $h.ToInt64().ToString('x'), (($traces -join ' ; ').Substring(0, [Math]::Min(600, ($traces -join ' ; ').Length))))
         }
         $ch = [RP.U]::ListChannel($cd.hw)
         if ($ch -eq '') {
@@ -873,6 +892,9 @@ function Read-W32PrinterList([IntPtr]$h, [string[]]$kids, [string]$pinId) {
         $lvInt = ''
         if ($ch -eq 'lv') {
             $lvInt = ('lvint=count:{0} cur:{1}' -f [RP.U]::ListCount($cd.hw, 'lv'), [RP.U]::ListSelIndex($cd.hw, 'lv'))
+            # trace IMMEDIATELY (fix-3): before the err-heavy msaa/uia line, so
+            # truncation can never drop the SysListView32 integer face again.
+            $traces += ("{0}@{1} {2}" -f $cd.cls, ($cd.hw.ToInt64().ToString('x')), $lvInt)
         }
         # Channel A (MSAA, primary): COM ceiling 10s via L1 twin.
         [RP.U]::WMark('msaa-list-read')
@@ -887,7 +909,6 @@ function Read-W32PrinterList([IntPtr]$h, [string[]]$kids, [string]$pinId) {
         $uiFirst = ''
         if ($ui.names.Count -gt 0) { $uiFirst = $ui.names[0] }
         $traces += ("{0}@{1}:msaa={2} cnt={3} err='{4}' first='{5}' uia={6} cnt={7} err='{8}' first='{9}'" -f $cd.cls, ($cd.hw.ToInt64().ToString('x')), $(if ($ms.ok) {'ok'} else {'no'}), $ms.cnt, $ms.err, $msFirst, $(if ($ui.ok) {'ok'} else {'no'}), $ui.cnt, $ui.err, $uiFirst)
-        if ($lvInt -ne '') { $traces += ("{0}@{1} {2}" -f $cd.cls, ($cd.hw.ToInt64().ToString('x')), $lvInt) }
         # Primary picks MSAA names (selection indexes into accChild order);
         # UIA wins only when it is the channel that actually holds the PDF row.
         $names = $ms.names
@@ -899,25 +920,20 @@ function Read-W32PrinterList([IntPtr]$h, [string[]]$kids, [string]$pinId) {
         if ($names.Count -eq 0) { continue }
         if (($names -join ' ') -match 'Microsoft Print to PDF') {
             $pb = ($traces -join ' ; ')
-            if ($pb.Length -gt 400) { $pb = $pb.Substring(0, 400) }
+            if ($pb.Length -gt 1000) { $pb = $pb.Substring(0, 1000) }
             return @{ names = $names; ctrl = $cd.hw; ch = $ch; probe = $pb; read = $read }
         }
         if ($names0.Count -eq 0) { $names0 = $names; $ctrl0 = $cd.hw; $ch0 = $ch; $read0 = $read }
     }
-    # Channel C after A/B found no PDF: dialog-wide WM_GETTEXT on Edit /
-    # ComboBox children (main runspace, 3s-bounded per box by SafeSend).
-    [RP.U]::WMark('edit-text-read')
-    $ed = Read-EditTexts $h $kids
-    $edFirst = ''
-    if (@($ed.names).Count -gt 0) { $edFirst = @($ed.names)[0] }
-    $traces += ("edit={0} err='{1}' first='{2}'" -f $ed.cnt, $ed.err, $edFirst)
+    # Channel C fallback decision (the read itself moved to the trace head):
+    # A/B found no PDF, so the pre-read edit texts get their shot at names.
     if ((@($ed.names) -join ' ') -match 'Microsoft Print to PDF') {
         $names0 = @($ed.names); $read0 = 'edit'
         $ctrl0 = $h; $ch0 = 'edit'
     }
     $pb = ($traces -join ' ; ')
     if ($traces.Count -eq 0) { $pb = 'na' }
-    if ($pb.Length -gt 400) { $pb = $pb.Substring(0, 400) }
+    if ($pb.Length -gt 1000) { $pb = $pb.Substring(0, 1000) }
     return @{ names = $names0; ctrl = $ctrl0; ch = $ch0; probe = $pb; read = $read0 }
 }
 
@@ -1418,7 +1434,11 @@ $uiaHex = ('0x{0:x}' -f $hDlg1.ToInt64())
 # L1: the UIA tree walk is the one call in this step that can block forever
 # on a foreign provider (twelfth-batch suspicion, not a conclusion) -- fresh
 # runspace, 10s ceiling, timeout fails with the same code face.
-$txt1 = Invoke-StageTimeout 'uia-dialog-text' ('function Get-DlgUiText([IntPtr]$h) {' + [string](Get-Command Get-DlgUiText).ScriptBlock + '}') ('Get-DlgUiText ([IntPtr]{0})' -f $hDlg1.ToInt64()) 10000 $uiaHex
+# Seventeenth batch (fix-2): the hand-concat wrapper declared its own parens
+# AND carried the normalized inner param(...) -- the duplicate-parameter
+# ParseException (the 'if in function ...' body-missing text). Route through Get-FnDef like every
+# other body: name without parens, params only inside the body.
+$txt1 = Invoke-StageTimeout 'uia-dialog-text' (Get-FnDef Get-DlgUiText) ('Get-DlgUiText ([IntPtr]{0})' -f $hDlg1.ToInt64()) 10000 $uiaHex
 [RP.U]::WMark('win32-scene')
 $kids = [RP.U]::ChildScene($hDlg1)
 $classSummary = Get-KidClassSummary $kids
