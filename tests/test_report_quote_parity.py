@@ -23,7 +23,6 @@ line 834 shape must trip Gate A, the repaired shape must pass.
 from __future__ import annotations
 
 import re
-import subprocess
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -86,28 +85,18 @@ def test_exemption_shape_still_present() -> None:
 
 
 def test_quote_gate_catches_prefx_shape() -> None:
-    """NEGATIVE VERIFICATION: the pre-fix 834 shape trips Gate A.
+    """NEGATIVE VERIFICATION with an embedded pre-fix sample.
 
-    Reads the committed parent revision from git (read-only) and asserts the
-    OLD line trips the gate while the working-tree file passes it. Skips
-    gracefully when git metadata is unavailable.
+    The original eighteenth-shot line (five single quotes, unclosed format
+    template) is spliced into the current file text; Gate A must flag it,
+    while the working tree itself stays clean. No git dependency -- the gate
+    is proven against the shape, not against a revision id.
     """
-    try:
-        out = subprocess.run(
-            ["git", "show", "HEAD:src/executor/uia/report.ps1"],
-            cwd=REPO,
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=30,
-        ).stdout
-    except (OSError, subprocess.SubprocessError):
-        import pytest
-
-        pytest.skip("git show unavailable")
-    old_bad = _odd_single_quote_lines(out)
-    new_bad = _odd_single_quote_lines(PS1.read_text(encoding="utf-8"))
-    assert any("' -f" in line for line in old_bad), (
-        "pre-fix revision should contain the unclosed format template"
-    )
-    assert not new_bad, "working tree must be clean under Gate A"
+    good = PS1.read_text(encoding="utf-8")
+    fixed = "('idx={0} name=''{1}''' -f $idx, $name)"
+    broken = "('idx={0} name=''{1}'' -f $idx, $name)"
+    assert fixed in good, "fixed template missing -- gate lost its live target"
+    bad = good.replace(fixed, broken, 1)
+    flagged = _odd_single_quote_lines(bad)
+    assert any("' -f" in line for line in flagged), "broken shape must trip Gate A"
+    assert not _odd_single_quote_lines(good), "working tree must be clean under Gate A"

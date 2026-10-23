@@ -93,9 +93,9 @@ def test_double_confirm_readback_gate():
     # 文本判据
     assert "$name -notmatch 'Microsoft Print to PDF'" in t, "选中行文本必须＝PDF"
     assert "'msaa-name'" in t, "读名走 L1 同构超时"
-    # 三个回读点全走 helper（init+alt+rect 后）
-    assert t.count("Get-SelectReadBack $listInfo.ctrl $listInfo.ch $lvCount $offset") == 3, (
-        "三处回读点（主路/备路/矩形路）全走双确认")
+    # 回读点全走 helper（主路/备路/扫描逐 hop＋扫描保底/rect-no 分支）
+    assert t.count("Get-SelectReadBack $listInfo.ctrl $listInfo.ch $lvCount $offset") == 5, (
+        "五处回读点（主路/备路/扫描循环内/扫描保底/rect-no）全走双确认")
     # 判据本体：最终 gate 用 rbObj.ok 而非裸 idx 比对
     assert "if (-not $rbObj.ok) {" in t, "终局 gate＝双确认结果"
     assert "$selIdx -ne $pickIdx" not in t, "旧的裸索引比对判据必须零命中"
