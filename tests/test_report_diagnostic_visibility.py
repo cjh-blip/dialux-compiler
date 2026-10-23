@@ -88,8 +88,8 @@ def test_hresult_travels_to_err_field():
     assert "public static int MsaaAccessibleH(IntPtr h, out object o)" in t, "H 版暴露 HRESULT"
     assert "if (hr != 0) { o = null; return hr; }" in t, "FAILED 拒绝"
     assert "return unchecked((int)0x80004005);" in t, "S_OK 空对象也算错"
-    # PS：三调用点（read/select/rect）都走 H 版且 hr 进串
-    assert t.count("[RP.U]::MsaaAccessibleH($h, [ref]$o)") == 3, "read/select/rect 三调用点全走 H 版"
+    # PS：四调用点（read/select/rect/回读读名）都走 H 版且 hr 进串
+    assert t.count("[RP.U]::MsaaAccessibleH($h, [ref]$o)") == 4, "read/select/rect/回读读名四调用点全走 H 版"
     assert "'0~-1~hr=0x{0:x}~'" in t, "读通道 wire 带 hr"
     assert "'msaa-null hr=0x{0:x}'" in t, "select/rect 标签带 hr"
     # 旧零信息 wrapper 不再被 PS 层直调

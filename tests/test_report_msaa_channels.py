@@ -95,10 +95,10 @@ def test_selection_channels_and_rect_backup():
     assert "accDoDefaultAction" in t, "MSAA 默认动作＝选择"
     assert "SelectionItemPattern" in t, "UIA SelectionItem.Select 路"
     assert "accLocation" in t, "矩形来源＝COM（替代 LVM_GETITEMRECT）"
-    # 主路分流与整数回读
+    # 主路分流与整数回读（十八批：回读集中到双确认 helper，直调移入其中）
     assert "$listInfo.read -eq 'msaa'" in t and "$listInfo.read -eq 'uia'" in t, "按 read 通道分流"
-    assert "[RP.U]::ListSelIndex($listInfo.ctrl, $listInfo.ch)" in t, "回读走整数索引"
-    assert "$selIdx -ne $pickIdx" in t, "回读判据＝索引比对（pickIdx 按文本名所定，语义等价）"
+    assert "[RP.U]::ListSelIndex($ctrl, $ch)" in t, "回读走整数索引（helper 内）"
+    assert "Get-SelectReadBack" in t, "回读经双确认 helper"
     assert "never a precondition of the COM routes" in t, "主路无前台声明"
     # cb/lb 整数消息选择仍在（lv 分流声明）
     assert 'return "lv-via-com"' in t
