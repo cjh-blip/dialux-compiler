@@ -98,11 +98,21 @@ namespace RP {
     // OBJID_CLIENT = -4; IID_IDispatch so PowerShell can late-bind the
     // returned object (accChildCount / accChild / accName / accDoDefaultAction
     // resolve through IDispatch -- no hand-written vtable, no dispId risk).
-    public static object MsaaAccessible(IntPtr h) {
-      object o = null;
+    // Sixteenth batch (suspicion b): the HRESULT used to be swallowed by the
+    // null-only wrapper -- MsaaAccessibleH exposes it so the PS layer can put
+    // 'hr=0x...' on the failure face instead of a bare null.
+    public static int MsaaAccessibleH(IntPtr h, out object o) {
+      o = null;
       Guid iid = new Guid("00020400-0000-0000-C000-000000000046");
       int hr = AccessibleObjectFromWindow(h, 0xFFFFFFFC, ref iid, out o);
-      if (hr != 0 || o == null) return null;
+      if (hr != 0) { o = null; return hr; }   // FAILED or partial result rejected
+      if (o == null) { return unchecked((int)0x80004005); }   // S_OK but no object
+      return 0;
+    }
+    public static object MsaaAccessible(IntPtr h) {
+      object o;
+      int hr = MsaaAccessibleH(h, out o);
+      if (hr != 0) return null;
       return o;
     }
 
@@ -266,7 +276,9 @@ namespace RP {
     // ---- Text reading moves to MSAA (COM-marshalled), UIA (same) and
     // ---- WM_GETTEXT in the .ps1; selection of lv items moves to MSAA
     // ---- accDoDefaultAction / UIA SelectionItem.
-    private static int ListCount(IntPtr h, string ch) {
+    // Sixteenth batch: count/cur-sel are INTEGER answers -- public so the
+    // .ps1 can put the SysListView32 integer face (count/cur) in the probe.
+    public static int ListCount(IntPtr h, string ch) {
       int n = 0;
       if (ch == "cb") n = (int)(long)SafeSend(h, 0x0146, IntPtr.Zero, IntPtr.Zero);
       else if (ch == "lb") n = (int)(long)SafeSend(h, 0x018B, IntPtr.Zero, IntPtr.Zero);
@@ -328,6 +340,34 @@ namespace RP {
         try { return Encoding.GetEncoding(936).GetString(raw, 0, z); }
         catch { return System.Text.Encoding.ASCII.GetString(raw, 0, z); }
       } finally { Marshal.FreeHGlobal(buf); }
+    }
+    // Sixteenth batch: ListBox IDENTITY probe -- integer/return-value only,
+    // read-only, zero text payloads (no pointer message anywhere): count,
+    // cur-sel, and per-item LENGTHS tried in both dialects (W=0x0191,
+    // A=0x018A) because a wrong length message returns -1/0 and both answers
+    // are data (the 'no-channel' verdict itself may just be a wrong count
+    // message -- these numbers decide it). The dialog's ListBox answering
+    // count=3 would re-anchor the next batch; lens never fetch item text.
+    public static string LbInfo(IntPtr h) {
+      long nRaw = (long)SafeSend(h, 0x018B, IntPtr.Zero, IntPtr.Zero);   // LB_GETCOUNT
+      long cur = (long)SafeSend(h, 0x0188, IntPtr.Zero, IntPtr.Zero);    // LB_GETCURSEL
+      long n = nRaw;
+      if (n < 0) n = 0;
+      long cap = n > 8 ? 8 : n;
+      StringBuilder sb = new StringBuilder();
+      sb.Append("count=").Append(nRaw).Append(" cur=").Append(cur);
+      sb.Append(" lensW=[");
+      for (long i = 0; i < cap; i++) {
+        if (i > 0) sb.Append(',');
+        sb.Append((long)SafeSend(h, 0x0191, (IntPtr)i, IntPtr.Zero));    // LB_GETTEXTLENW
+      }
+      sb.Append("] lensA=[");
+      for (long i = 0; i < cap; i++) {
+        if (i > 0) sb.Append(',');
+        sb.Append((long)SafeSend(h, 0x018A, (IntPtr)i, IntPtr.Zero));    // LB_GETTEXTLENA
+      }
+      sb.Append(']');
+      return sb.ToString();
     }
   }
 }
@@ -474,13 +514,31 @@ function Get-FgLabel() {
 }
 function Invoke-StageTimeout([string]$stage, [string]$fnBody, [string]$call, [int]$timeoutMs, [string]$targetHex) {
     # L1 hard timeout around the genuinely unbounded cross-process calls (UIA
-    # tree walk, spooler query). A fresh runspace executes the helper text +
-    # the call under a WaitOne ceiling; on timeout the fail line is emitted
-    # FIRST (code face before the 600s shell watchdog, printer-step-hang-
-    # timeout with stage/elapsed/fg/target) and the process exits. Deliberately
-    # NO Stop()/Dispose on the timeout path -- stopping a stuck COM call can
-    # itself block; the exit tears everything down instead.
+    # tree walk, spooler query, COM readers). A fresh runspace executes the
+    # helper text + the call under a WaitOne ceiling; on timeout the fail line
+    # is emitted FIRST (code face before the 600s shell watchdog, printer-step-
+    # hang-timeout with stage/elapsed/fg/target) and the process exits.
+    # Deliberately NO Stop()/Dispose on the timeout path -- stopping a stuck
+    # COM call can itself block; the exit tears everything down instead.
+    # Sixteenth batch (THE diagnostic key): an inner non-terminating error
+    # (CommandNotFound, parse error, COM member miss) lands in Streams.Error
+    # and yields ZERO output -- that silent zero was exactly the fifteenth
+    # shot's probe ('err=empty' on both COM channels) and has been hiding
+    # every L1-wrapped failure since the twelfth batch. NOW: first error text
+    # travels back in the SAME 4-field wire the readers parse
+    # ('0~-1~<msg>~', single-line, 160-capped, '~'/'|' scrubbed) so
+    # 'empty' can only ever mean genuinely error-free silence.
     $rs = [runspacefactory]::CreateRunspace()
+    # Sixteenth batch (suspicion a): COM apartment affinity. Both channels
+    # are COM (oleacc MSAA, UIAutomationClient UIA); a fresh runspace defaults
+    # to MTA, and MTA is where late-bound IDispatch quirks go silent. Opt into
+    # STA before Open() whenever the host supports it; unsupported hosts keep
+    # their default (never fail on the opt-in).
+    try {
+        if ($rs.SupportsRunspaceApartmentState) {
+            $rs.ApartmentState = [System.Threading.ApartmentState]::STA
+        }
+    } catch { }
     $rs.Open()
     $ps = [powershell]::Create()
     $ps.Runspace = $rs
@@ -490,10 +548,27 @@ function Invoke-StageTimeout([string]$stage, [string]$fnBody, [string]$call, [in
         Fail 'report-printer' ("printer-step-hang-timeout stage={0} elapsed={1} fg='{2}' target={3}" -f $stage, $timeoutMs, (Get-FgLabel), $targetHex)
     }
     $out = $null
-    try { $out = $ps.EndInvoke($ih) } catch { $out = $null }
+    $endErr = ''
+    try { $out = $ps.EndInvoke($ih) } catch { $endErr = "$($_.Exception.Message)"; $out = $null }
+    # Error surface, in priority order: EndInvoke rethrow > first stream
+    # error's message > HadErrors without detail > runspace init failure.
+    $errTxt = $endErr
+    if ($errTxt -eq '') {
+        try { if ($ps.Streams.Error.Count -gt 0) { $errTxt = [string]$ps.Streams.Error[0].Exception.Message } } catch { }
+    }
+    if ($errTxt -eq '' -and $ps.HadErrors) { $errTxt = 'had-errors-no-detail' }
+    if ($errTxt -eq '' -and $rs.InitializationFailed) { $errTxt = 'runspace-init-failed' }
     try { $ps.Dispose() } catch { }
     try { $rs.Close() } catch { }
-    if ($out -eq $null -or $out.Count -eq 0) { return '' }
+    if ($out -eq $null -or $out.Count -eq 0) {
+        if ($errTxt -eq '') { return '' }
+        $errTxt = ($errTxt -replace '\s+', ' ').Replace('~', ' ').Replace('|', ' ')
+        if ($errTxt.Length -gt 160) { $errTxt = $errTxt.Substring(0, 160) }
+        return ('0~-1~{0}~' -f $errTxt)
+    }
+    # Output exists AND an error fired: keep the output (the wire must stay
+    # parseable; callers surface their own err fields; a working return value
+    # means the error was non-fatal and secondary by definition).
     return [string]$out[0]
 }
 function Get-KidClassSummary([string[]]$kids) {
@@ -566,9 +641,17 @@ function Read-MsaaList([IntPtr]$h) {
     # happen here by construction. Dual varChild shapes per index (child
     # object first, then indexed name on the root), all errors contained.
     # Returns ONE string for the runspace channel: ok~cnt~err~names.
+    # Suspicion c, statically recorded: oleacc's IDispatch exposes
+    # 'accChildCount'/'accName' as PROPGET names -- 'get_acc*' (shape #1)
+    # normally misses and lands in the catch BY DESIGN; shape #2
+    # ('$o.accChildCount' property read) is the real path; shape #3 is the
+    # bare member on a child object. Which shape the machine actually takes
+    # becomes readable from err= now that Invoke-StageTimeout surfaces it.
     $o = $null
     $errS = ''
-    try { $o = [RP.U]::MsaaAccessible($h) } catch { $errS = 'aofw-throw' }
+    $hr = 0
+    try { $hr = [RP.U]::MsaaAccessibleH($h, [ref]$o) } catch { $errS = 'aofw-throw' }
+    if ($hr -ne 0) { return ('0~-1~hr=0x{0:x}~' -f $hr) }   # HRESULT now travels
     if ($o -eq $null) { return ('0~-1~{0}~' -f $errS) }
     $n = -1
     try { $n = [int]$o.accChildCount } catch { $errS = 'childcount-fail' }
@@ -647,7 +730,9 @@ function Select-MsaaItem([IntPtr]$h, [int]$i) {
     # Selection route A (COM, safe): the item's MSAA default action IS select
     # in the accessibility contract. Returns a via-tag string (no object
     # crosses the runspace wall).
-    $o = [RP.U]::MsaaAccessible($h)
+    $hr = 0
+    try { $hr = [RP.U]::MsaaAccessibleH($h, [ref]$o) } catch { return 'aofw-throw' }
+    if ($hr -ne 0) { return ('msaa-null hr=0x{0:x}' -f $hr) }
     if ($o -eq $null) { return 'msaa-null' }
     $n = -1
     try { $n = [int]$o.accChildCount } catch { return 'childcount-fail' }
@@ -665,7 +750,10 @@ function Get-MsaaItemRect([IntPtr]$h, [int]$i) {
     # Rect for the physical-click backup: accLocation returns SCREEN
     # coordinates (COM-marshalled) -- no LVM_GETITEMRECT, no raw RECT pointer.
     # Returns "x~y~w~h" or a failure tag (ConvertFrom-RectLine parses).
-    $o = [RP.U]::MsaaAccessible($h)
+    $o = $null
+    $hr = 0
+    try { $hr = [RP.U]::MsaaAccessibleH($h, [ref]$o) } catch { return 'aofw-throw' }
+    if ($hr -ne 0) { return ('msaa-null hr=0x{0:x}' -f $hr) }
     if ($o -eq $null) { return 'msaa-null' }
     try {
         $c = $o.accChild($i)
@@ -766,7 +854,26 @@ function Read-W32PrinterList([IntPtr]$h, [string[]]$kids, [string]$pinId) {
             Fail 'report-printer' ("printer-step-hang-timeout stage=win32-list elapsed={0} fg='{1}' target=0x{2} probe='{3}'" -f $budget.ElapsedMilliseconds, (Get-FgLabel), $h.ToInt64().ToString('x'), (($traces -join ' ; ').Substring(0, [Math]::Min(200, ($traces -join ' ; ').Length))))
         }
         $ch = [RP.U]::ListChannel($cd.hw)
-        if ($ch -eq '') { $traces += ("{0}:no-channel" -f $cd.cls); continue }
+        if ($ch -eq '') {
+            $traces += ("{0}:no-channel" -f $cd.cls)
+            # Sixteenth batch: the ListBox still gets its IDENTITY probe even
+            # with no channel verdict -- integer/length data only (LbInfo:
+            # count/cur/lensW/lensA). count>0 re-anchors next batch; a wrong
+            # count message shows up as count=0/-1 here and retires the
+            # 'no-channel' guess with data instead of a class name.
+            if ($cd.cls -eq 'ListBox') {
+                $lb = ''
+                try { $lb = [RP.U]::LbInfo($cd.hw) } catch { $lb = 'lbinfo-throw' }
+                $traces += ("{0}@{1}:lb {2}" -f $cd.cls, ($cd.hw.ToInt64().ToString('x')), $lb)
+            }
+            continue
+        }
+        # SysListView32 integer face travels beside the COM channels: count
+        # and selected index are pure integer answers (cross-process safe).
+        $lvInt = ''
+        if ($ch -eq 'lv') {
+            $lvInt = ('lvint=count:{0} cur:{1}' -f [RP.U]::ListCount($cd.hw, 'lv'), [RP.U]::ListSelIndex($cd.hw, 'lv'))
+        }
         # Channel A (MSAA, primary): COM ceiling 10s via L1 twin.
         [RP.U]::WMark('msaa-list-read')
         $msLine = Invoke-StageTimeout 'msaa-list-read' $msaaReadBody ('Read-MsaaList ([IntPtr]{0})' -f $cd.hw.ToInt64()) 10000 $uhex
@@ -780,6 +887,7 @@ function Read-W32PrinterList([IntPtr]$h, [string[]]$kids, [string]$pinId) {
         $uiFirst = ''
         if ($ui.names.Count -gt 0) { $uiFirst = $ui.names[0] }
         $traces += ("{0}@{1}:msaa={2} cnt={3} err='{4}' first='{5}' uia={6} cnt={7} err='{8}' first='{9}'" -f $cd.cls, ($cd.hw.ToInt64().ToString('x')), $(if ($ms.ok) {'ok'} else {'no'}), $ms.cnt, $ms.err, $msFirst, $(if ($ui.ok) {'ok'} else {'no'}), $ui.cnt, $ui.err, $uiFirst)
+        if ($lvInt -ne '') { $traces += ("{0}@{1} {2}" -f $cd.cls, ($cd.hw.ToInt64().ToString('x')), $lvInt) }
         # Primary picks MSAA names (selection indexes into accChild order);
         # UIA wins only when it is the channel that actually holds the PDF row.
         $names = $ms.names
