@@ -831,7 +831,7 @@ function Get-SelectReadBack([IntPtr]$ctrl, [string]$ch, [int]$lvCount, [int]$off
     try {
         $name = Invoke-StageTimeout 'msaa-name' $msaaBody ('Get-MsaaItemName ([IntPtr]{0}) {1}' -f $ctrl.ToInt64(), ($idx + $offset)) 5000 $uhex
     } catch { $name = '' }
-    $rb = ('idx={0} name=''{1}'' -f $idx, $name)
+    $rb = ('idx={0} name=''{1}''' -f $idx, $name)
     if ($name -notmatch 'Microsoft Print to PDF') { return @{ ok = $false; rb = $rb; idx = $idx } }
     return @{ ok = $true; rb = $rb; idx = $idx }
 }
