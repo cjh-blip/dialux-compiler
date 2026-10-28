@@ -139,3 +139,19 @@ def test_bulge_circle_with_furniture_keeps_room(tmp_path: Path):
              if not str(s.get("name", "")).startswith("家具_")]
     assert len(rooms) == 1, f"弧形房间被吃掉：rooms={len(rooms)}"
     assert abs(_area(rooms[0]["polygon"]) - math.pi * 4.0 ** 2) < 0.3
+
+
+def test_closed_lwpolyline_counts_as_closed(tmp_path: Path):
+    """close=True 的 LWPOLYLINE 是隐式闭合（多边形不重复首点），闭合检查不能判它没闭合。"""
+    path = _write_dxf(tmp_path, [[(0, 0, 0), (8000, 0, 0), (8000, 4000, 0), (0, 4000, 0)]],
+                      name="closed.dxf")
+    ir = parse_dxf(str(path), ParseConfig())
+    assert ir["_meta"]["rooms_closed"] == 1
+
+
+def test_meta_units_reflect_header_not_config_fallback(tmp_path: Path):
+    """_meta.dxf_units 要写实际用的单位（header=mm），不是配置兜底的 cm。"""
+    path = _write_dxf(tmp_path, [[(0, 0, 0), (8000, 0, 0), (8000, 4000, 0), (0, 4000, 0)]],
+                      name="units.dxf")
+    ir = parse_dxf(str(path), ParseConfig(units="cm"))
+    assert ir["_meta"]["dxf_units"] == "mm"
