@@ -114,3 +114,28 @@ def test_no_bulge_polyline_unchanged(tmp_path: Path):
     poly = rooms[0]["polygon"]
     assert len(poly) == 4
     assert abs(_area(poly) - 32.0) < 1e-6
+
+
+def test_bulge_circle_with_furniture_keeps_room(tmp_path: Path):
+    """弧形房间与家具同存：家具端点不得把弧形房间环吃掉（评委原话「圆形含家具识别为零」）。"""
+    import math
+
+    import ezdxf
+
+    b = math.tan(math.radians(90) / 4)
+    ring = [(5000 + 4000 * math.cos(math.radians(a)),
+             5000 + 4000 * math.sin(math.radians(a)), b) for a in (0, 90, 180, 270)]
+    doc = ezdxf.new("R2010", setup=True)
+    doc.header["$INSUNITS"] = 4
+    msp = doc.modelspace()
+    msp.add_lwpolyline([(x, y, 0, 0, bb) for (x, y, bb) in ring], format="xyseb",
+                       close=True, dxfattribs={"layer": "0"})
+    msp.add_lwpolyline([(4000, 4300), (6000, 4300), (6000, 5700), (4000, 5700)],
+                       close=True, dxfattribs={"layer": "家具"})
+    path = tmp_path / "c.dxf"
+    doc.saveas(path)
+    ir = parse_dxf(str(path), ParseConfig())
+    rooms = [s for s in ir["storeys"][0]["spaces"]
+             if not str(s.get("name", "")).startswith("家具_")]
+    assert len(rooms) == 1, f"弧形房间被吃掉：rooms={len(rooms)}"
+    assert abs(_area(rooms[0]["polygon"]) - math.pi * 4.0 ** 2) < 0.3
