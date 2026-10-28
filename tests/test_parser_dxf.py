@@ -1,7 +1,7 @@
 """TR-2a: ParseConfig roundtrip + header_insunits_to_units。"""
 from pathlib import Path
 
-from src.parser.dxf import ParseConfig, header_insunits_to_units
+from src.parser.dxf import ParseConfig, header_insunits_to_units, parse_dxf
 
 
 def test_parse_config_roundtrip(tmp_path: Path):
@@ -49,3 +49,68 @@ def test_header_insunits_mapping():
     assert header_insunits_to_units(5) == "cm"
     assert header_insunits_to_units(None) is None
     assert header_insunits_to_units(999) is None
+
+
+# ── bulge 弧段采样（2026-10-28）：LWPOLYLINE 的弧原先被当成弦，圆形/弧形房间形状与面积全错 ──
+
+def _area(poly):
+    return abs(sum(poly[i][0] * poly[(i + 1) % len(poly)][1]
+                   - poly[(i + 1) % len(poly)][0] * poly[i][1]
+                   for i in range(len(poly))) / 2.0)
+
+
+def _write_dxf(tmp_path: Path, rings, name="t.dxf"):
+    """rings: list[list[(x, y, bulge)]]，每环一条闭合 LWPOLYLINE，画在图层 0。"""
+    import ezdxf
+
+    doc = ezdxf.new("R2010", setup=True)
+    doc.header["$INSUNITS"] = 4  # mm
+    msp = doc.modelspace()
+    for ring in rings:
+        msp.add_lwpolyline([(x, y, 0, 0, b) for (x, y, b) in ring],
+                           format="xyseb", close=True, dxfattribs={"layer": "0"})
+    path = tmp_path / name
+    doc.saveas(path)
+    return path
+
+
+def test_bulge_arc_room_area_is_真实面积(tmp_path: Path):
+    """8m×4m + 顶边半圆（半径 4m）：真实面积 32 + π·4²/2 = 57.13 m²；按顶点当弦只有 32.00 m²。"""
+    import math
+
+    path = _write_dxf(tmp_path, [[(0, 0, 0), (8000, 0, 0), (8000, 4000, 1.0), (0, 4000, 0)]])
+    ir = parse_dxf(str(path), ParseConfig())
+    rooms = [s for s in ir["storeys"][0]["spaces"]
+             if not str(s.get("name", "")).startswith("家具_")]
+    assert len(rooms) == 1
+    poly = rooms[0]["polygon"]
+    assert len(poly) > 50, "弧段没被采样成折线"
+    assert abs(_area(poly) - (32.0 + math.pi * 4.0 ** 2 / 2)) < 0.2
+
+
+def test_bulge_full_circle_room(tmp_path: Path):
+    """4 段 bulge 拼成正圆（半径 4m）：面积 π·4² = 50.27 m²；当弦只有 32.00 m²。"""
+    import math
+
+    b = math.tan(math.radians(90) / 4)
+    ring = [(5000 + 4000 * math.cos(math.radians(a)),
+             5000 + 4000 * math.sin(math.radians(a)), b) for a in (0, 90, 180, 270)]
+    path = _write_dxf(tmp_path, [ring], name="circle.dxf")
+    ir = parse_dxf(str(path), ParseConfig())
+    rooms = [s for s in ir["storeys"][0]["spaces"]
+             if not str(s.get("name", "")).startswith("家具_")]
+    assert len(rooms) == 1
+    assert abs(_area(rooms[0]["polygon"]) - math.pi * 4.0 ** 2) < 0.3
+
+
+def test_no_bulge_polyline_unchanged(tmp_path: Path):
+    """无 bulge 时必须与旧行为逐点一致：矩形仍是 4 个顶点、面积不变（回归保护）。"""
+    path = _write_dxf(tmp_path, [[(0, 0, 0), (8000, 0, 0), (8000, 4000, 0), (0, 4000, 0)]],
+                      name="rect.dxf")
+    ir = parse_dxf(str(path), ParseConfig())
+    rooms = [s for s in ir["storeys"][0]["spaces"]
+             if not str(s.get("name", "")).startswith("家具_")]
+    assert len(rooms) == 1
+    poly = rooms[0]["polygon"]
+    assert len(poly) == 4
+    assert abs(_area(poly) - 32.0) < 1e-6
