@@ -155,3 +155,23 @@ def test_meta_units_reflect_header_not_config_fallback(tmp_path: Path):
                       name="units.dxf")
     ir = parse_dxf(str(path), ParseConfig(units="cm"))
     assert ir["_meta"]["dxf_units"] == "mm"
+
+
+def test_circle_entity_room(tmp_path: Path):
+    """CAD 里直接用 CIRCLE 画圆墙的图纸：分支 A 要收（历史缺口，rooms 曾记 0）。"""
+    import ezdxf
+    import math
+
+    doc = ezdxf.new("R2010", setup=True)
+    doc.header["$INSUNITS"] = 4
+    msp = doc.modelspace()
+    msp.add_circle((4000, 4000), 3000, dxfattribs={"layer": "0"})
+    msp.add_lwpolyline([(3800, 3800), (4600, 3800), (4600, 4600), (3800, 4600)],
+                       close=True, dxfattribs={"layer": "0"})
+    p = tmp_path / "circle_entity.dxf"
+    doc.saveas(p)
+    ir = parse_dxf(str(p), ParseConfig())
+    rooms = [s for s in ir["storeys"][0]["spaces"]
+             if not str(s.get("name", "")).startswith("家具_")]
+    assert len(rooms) == 1, f"rooms={len(rooms)}"
+    assert abs(_area(rooms[0]["polygon"]) - math.pi * 3.0 ** 2) < 0.2
